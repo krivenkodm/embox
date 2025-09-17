@@ -1,0 +1,6 @@
+package embox.cmd
+@AutoCmd
+@Cmd(name = "hello", help = "Hello world")
+module hello {
+    source "hello.c"
+}
