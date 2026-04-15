@@ -342,13 +342,6 @@ int main(int argc, char** argv) {
     printf("[5] dets=%zu (C=%d)\n", dets.size(), C);
     if (dets.empty()) return 0;
 
-    for (size_t i = 0; i < dets.size(); ++i) {
-        const Det& d = dets[i];
-        const char* name = (d.cls >= 0 && d.cls < 80) ? COCO80[d.cls] : "cls";
-        printf("raw[%zu] %s cls=%d conf=%.3f x=%.1f y=%.1f w=%.1f h=%.1f\n",
-            i, name, d.cls, d.score, d.x, d.y, d.w, d.h);
-    }
-
     sort_dets_by_score_desc(dets);
     for (auto& d : dets) clip_box(d, S, S);
 

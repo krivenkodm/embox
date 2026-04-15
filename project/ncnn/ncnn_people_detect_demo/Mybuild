@@ -1,0 +1,22 @@
+package embox.cmd.ncnn
+
+
+@LinkerSection(text="ncnn_pd_demo_test_text",rodata="ncnn_pd_demo_test_rodata",data="ncnn_pd_demo_test_data",bss="ncnn_pd_demo_test_bss",arm_exidx="ncnn_demo_test_arm_exidx",arm_extab="ncnn_demo_test_arm_extab")
+@App
+@AutoCmd
+@CxxCmd(name="ncnn_pd_demo", help="People detect NCNN demo on Embox")
+@Build(stage=2)
+@BuildDepends(third_party.lib.ncnn.libncnn)
+module ncnn_people_detect_demo {
+
+    source 
+        "main.cpp",
+        "dfl_decode.cpp",
+        "image_io.cpp",
+        "nms.cpp",
+        "stb_image_impl.cpp",
+        "mobile0_35x_model/mobile0_35xFPNdw.id.h",
+        "mobile0_35x_model/mobile0_35xFPNdw.mem.h"
+    
+    depends third_party.lib.ncnn.libncnn
+}
