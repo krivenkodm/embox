@@ -115,6 +115,11 @@ int fwscanf(FILE *stream, const wchar_t *wc, ...) {
 	return 0;
 }
 
+int vfwscanf(FILE *stream, const wchar_t *format, va_list arg) {
+	printf("%s\n",__func__);
+	return 0;
+}
+
 int mbsinit(const mbstate_t *st) {
 	printf("%s\n",__func__);
 	return 0;
@@ -134,7 +139,17 @@ int swscanf(const wchar_t *s, const wchar_t *format, ... ) {
 	return 0;
 }
 
+int vswscanf(const wchar_t *s, const wchar_t *format, va_list arg) {
+	printf("%s\n",__func__);
+	return 0;
+}
+
 int vwprintf(const wchar_t *format, va_list arg) {
+	printf("%s\n",__func__);
+	return 0;
+}
+
+int vwscanf(const wchar_t *format, va_list arg) {
 	printf("%s\n",__func__);
 	return 0;
 }
