@@ -5,7 +5,8 @@ PKG_SOURCES := https://github.com/Tencent/$(PKG_NAME)/archive/refs/tags/$(PKG_VE
 PKG_MD5     := da74ad0af613a8dd4d9a4a02a234ecef
 PKG_PATCHES := \
 	patches/0001-embox-platform-template.patch \
-	patches/0002-embox-install-features-header.patch
+	patches/0003-cortex-m-generic-backend.patch \
+	patches/0004-embox-system-new-delete.patch
 
 NCNN_FLAGS = \
 	-DCMAKE_TOOLCHAIN_FILE=$(abspath $(MOD_DIR))/cmake/embox-toolchain.cmake \
@@ -33,6 +34,10 @@ NCNN_FLAGS = \
 	-DNCNN_AVX=OFF \
 	-DNCNN_AVX2=OFF \
 	-DNCNN_SSE2=OFF
+
+ifeq (1,$(call option_get,BOOLEAN,cortex_m))
+NCNN_FLAGS += -DEMBOX_NCNN_CORTEX_M=ON
+endif
 
 $(CONFIGURE) :
 	mkdir -p $(PKG_SOURCE_DIR)/build-embox

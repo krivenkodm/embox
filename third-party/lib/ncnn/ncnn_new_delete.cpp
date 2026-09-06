@@ -1,20 +1,17 @@
-// third-party/lib/ncnn/ncnn_new_delete.cpp
+// SPDX-License-Identifier: BSD-2-Clause
 
 #include <stddef.h>
 
-// placement new
-void* operator new(size_t, void* p) /*noexcept*/ {
-    return p;
+void *operator new(size_t, void *ptr) {
+	return ptr;
 }
 
-void operator delete(void*, void*) /*noexcept*/ {
-    // nothing to do
+void operator delete(void *, void *) {
 }
 
-void* operator new[](size_t, void* p) /*noexcept*/ {
-    return p;
+void *operator new[](size_t, void *ptr) {
+	return ptr;
 }
 
-void operator delete[](void*, void*) /*noexcept*/ {
-    // nothing to do
+void operator delete[](void *, void *) {
 }
