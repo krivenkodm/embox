@@ -11,11 +11,11 @@ module ncnn_public_headers {}
 @BuildDepends(third_party.compiler_headers)
 @BuildDepends(embox.cxx.LibCxx)
 static module libncnn {
+	option boolean cortex_m=false
 
     source
         "^BUILD/extbld/third_party/lib/ncnn/libncnn/install/lib/libncnn.a",
-        "ncnn_new_delete.cpp",
-        "ncnn_math_trig_shim.cpp"
+        "ncnn_new_delete.cpp"
 
     depends third_party.lib.ncnn.ncnn_public_headers
     depends third_party.compiler_headers

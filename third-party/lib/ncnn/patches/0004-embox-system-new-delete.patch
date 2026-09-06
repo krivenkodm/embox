@@ -1,0 +1,5 @@
+--- ncnn-20250916/src/simplestl.cpp
++++ ncnn-20250916/src/simplestl.cpp
+@@ -6 +6 @@
+-#if NCNN_SIMPLESTL
++#if NCNN_SIMPLESTL && !defined(__EMBOX__)
