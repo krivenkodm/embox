@@ -1,0 +1,19 @@
+package embox.cmd.ncnn
+
+@App
+@AutoCmd
+@CxxCmd(name="ncnn_inference_smoke", help="Run a tiny NCNN dense network in external SDRAM")
+@Build(stage=2)
+@BuildDepends(third_party.lib.ncnn.libncnn)
+@BuildDepends(third_party.lib.ncnn.ncnn_public_headers)
+@BuildDepends(third_party.compiler_headers)
+@BuildDepends(embox.cxx.LibCxx)
+module ncnn_inference_smoke {
+
+	source "main.cpp"
+
+	depends third_party.lib.ncnn.libncnn
+	depends third_party.lib.ncnn.ncnn_public_headers
+	depends third_party.compiler_headers
+	depends embox.cxx.LibCxx
+}
