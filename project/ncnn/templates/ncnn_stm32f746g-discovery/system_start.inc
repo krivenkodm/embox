@@ -1,0 +1,6 @@
+"export PWD=/",
+"export HOME=/",
+"stl_demo_sort1",
+"ncnn_alloc_smoke",
+"ncnn_inference_smoke",
+"tish",

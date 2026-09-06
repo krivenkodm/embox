@@ -1,0 +1,13 @@
+--- ncnn-20250916/CMakeLists.txt
++++ ncnn-20250916/CMakeLists.txt
+@@ -533,6 +533,11 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(powerpc|ppc)")
+         endif()
+     endif()
++elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^cortex-m")
++    # Cortex-M implements the Thumb microcontroller profile and cannot use
++    # ncnn's ARM/A-profile optimized kernels. Keep the portable scalar layer
++    # implementations while still compiling with the target MCU flags.
++    set(NCNN_TARGET_ARCH generic)
+ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(xtensa)")
+     set(NCNN_TARGET_ARCH xtensa)
+ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(s390x)")
