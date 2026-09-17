@@ -10,7 +10,7 @@ extern "C" {
 
 namespace {
 
-constexpr uintptr_t kSdramStart = 0x60000000u;
+constexpr uintptr_t kSdramStart = 0x60040000u; /* LCD occupies the first 256 KiB. */
 constexpr uintptr_t kSdramEnd = 0x60800000u;
 constexpr int kWidth = 256;
 constexpr int kHeight = 256;
