@@ -134,6 +134,89 @@ An absent MobileNet image was rejected before parsing. Full 16 MiB verification
 against the original image plus the new payload confirmed other QSPI contents
 were preserved. The exporter reproduced the image and generated headers exactly.
 
-Internal firmware: 907,064 B / 1 MiB (86.50%); internal SRAM: 141,888 B / 320 KiB
-(43.30%). Peak SDRAM allocation has not been measured. The next step is memory
-profiling and a controlled comparison of QSPI read modes and arithmetic options.
+The original uninstrumented firmware occupied 907,064 B / 1 MiB (86.50%);
+internal SRAM was 141,888 B / 320 KiB (43.30%). See the measured profile below
+for the instrumented firmware and SDRAM peak.
+
+## Memory and timing profile
+
+The same `ncnn_mobilenet_smoke` command now prints `timing_ms` and `SDRAM bytes`
+records before PASS. It still validates all 1000 logits on every run.
+
+The STM32 template links project-local `--wrap=page_alloc` and
+`--wrap=page_alloc_zero` hooks. They sample the external page allocator's used
+bytes after every allocation while this command is active. This includes brief
+workspace peaks, graph objects, activations, heap segment metadata, alignment
+and unused space in allocated segments. `capacity` excludes the fixed page
+allocator control area at the start of the 8 MiB SDRAM; `page` gives the
+measurement granularity. `baseline`, `peak` and `final` are absolute allocated
+page bytes, and `min_free = capacity - peak`. These are not tensor payload sizes
+or a largest-contiguous-free-block measurement. Existing allocations and any
+other tasks using this allocator during the command are included.
+
+Before measurement a self-test allocates one page plus two zeroed pages, checks
+the observed peaks, frees both, and requires the original free count. A missing
+linker hook therefore cannot silently produce a zero peak. The command fails
+if an external page allocation failed or final usage differs from its baseline.
+`other_heap_allocs` counts successful page-allocation observations outside the
+external heap during the interval; it helps identify fallback or concurrent
+system activity, but does not measure byte allocations inside existing segments.
+No heap implementation, common build scripts or QSPI contents are changed.
+
+Timing uses `CLOCK_MONOTONIC` in milliseconds; a zero means less than one timer
+interval. The fields are:
+
+| Field | Measured work |
+| --- | --- |
+| `qspi` | QSPI setup, including the existing JEDEC diagnostic |
+| `crc` | Graph and weight CRC32 validation |
+| `param` | Net construction, options and binary graph loading |
+| `model` | Weight loading and pipeline setup |
+| `input` | Input allocation/fill, extractor construction and input binding |
+| `extract` | NCNN inference |
+| `verify` | Output shape/location, 1000 reference comparisons and top-five selection |
+| `cleanup` | Destruction of the output, extractor, input and Net |
+| `total` | QSPI initialization through heap restoration, including intervening UART output |
+
+`total` excludes typed command delivery, the profiler self-test and the final
+profile/PASS diagnostics. It need not equal the sum of stage times because
+intervening output is included and each stage is rounded down to milliseconds.
+The heap peak includes the timing diagnostic after heap restoration. The hooks
+and clocks add measurement overhead; compare read modes with the same profiling
+firmware and report the uninstrumented reference separately.
+
+### Profile verified on 2026-09-17
+
+Three consecutive runs after flashing and reset passed all 1000 output values
+(maximum reported absolute error 0.000017) and the allocation-hook self-test:
+
+| Measurement | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| QSPI initialization, ms | 2 | 2 | 2 |
+| CRC validation, ms | 3010 | 3010 | 3010 |
+| Graph loading, ms | 91 | 91 | 91 |
+| Weight/pipeline loading, ms | 2 | 2 | 2 |
+| Input/extractor preparation, ms | 4 | 4 | 4 |
+| Inference, ms | 8188 | 8185 | 8191 |
+| Output verification, ms | 0 | 0 | 0 |
+| Cleanup, ms | 29 | 29 | 29 |
+| Total through heap restoration, ms | 11385 | 11382 | 11388 |
+| Peak allocated SDRAM pages, bytes | 1256256 | 1256256 | 1256256 |
+| Baseline / final allocated bytes | 0 / 0 | 0 / 0 | 0 / 0 |
+
+Usable SDRAM page capacity is 8,372,160 bytes, with 64-byte pages and 16,448
+bytes reserved for allocator control. Peak allocation is about 1.198 MiB;
+minimum free capacity is 7,115,904 bytes (about 6.786 MiB). All runs reported
+zero failed external page allocations and zero other-heap page allocations.
+These figures apply to this fixed 96x96 FP32 fixture; they do not establish the
+memory requirement of larger inputs or camera/display buffers.
+
+The four startup tests and the convolution-QSPI, dense and 768 KiB allocation
+tests after profiling all passed. Disassembly confirms both heap-growth paths
+in `mspace_memalign` call the wrapper and that the wrappers call the real
+allocator without recursion. No QSPI erase or programming was needed.
+
+The clean profiling build occupies 908,440 B / 1 MiB internal Flash (86.64%),
+1,376 B more than the baseline. Internal SRAM remains 141,888 B (43.30%).
+The next controlled experiment is quad-data QSPI with the same checks and
+profiling, followed by real-image input and any precision tradeoffs.

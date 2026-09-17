@@ -159,18 +159,19 @@ and verify it with `flash verify_bank`. Other sectors need no erasure.
 ## Verified memory use
 
 Clean build verified on hardware with Arm GNU Toolchain 14.3.1
-(base `6fe83362b9` plus the MobileNet command):
+(base `df5c2c7bf2` plus MobileNet memory/timing profiling):
 
-- internal Flash: 907,064 B / 1 MiB (86.50%)
+- internal Flash: 908,440 B / 1 MiB (86.64%)
 - internal SRAM: 141,888 B / 320 KiB (43.30%)
-- external SDRAM heap: 8 MiB at `0x60000000`
+- external SDRAM heap: 8 MiB at `0x60000000`; measured MobileNet peak
+  1,256,256 B of allocated pages, with 7,115,904 B free at peak and full release
 - QSPI images: 10,156,800 B for MobileNet at `0x90500000`, plus the
   512 B convolution fixture at `0x90ff0000` (separate from the ELF)
 
 ## Next stages
 
-1. Measure peak SDRAM use and repeat timing measurements; evaluate quad-data
-   QSPI reads, FP16 or INT8 from this FP32 baseline.
+1. Compare quad-data QSPI with the measured single-line profile (about 3.01 s
+   CRC validation and 8.19 s inference); evaluate FP16 or INT8 from this FP32 baseline.
 2. Move large read-only NCNN sections only if the internal Flash budget requires it.
 3. Add real image input and preprocessing after the memory budget is proven.
 

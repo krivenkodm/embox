@@ -9,7 +9,7 @@ package embox.cmd.ncnn
 @BuildDepends(third_party.compiler_headers)
 @BuildDepends(embox.cxx.LibCxx)
 module ncnn_mobilenet_smoke {
-	source "main.cpp", "bounded_reader.h", "input.h", "manifest.h", "reference.h"
+	source "main.cpp", "bounded_reader.h", "input.h", "manifest.h", "reference.h", "timing.h"
 
 	depends third_party.lib.ncnn.libncnn
 	depends third_party.lib.ncnn.ncnn_public_headers
@@ -17,4 +17,13 @@ module ncnn_mobilenet_smoke {
 	depends embox.cxx.LibCxx
 	depends embox.lib.crypt.crc32
 	depends stm32f746_qspi_reader
+	depends stm32f746_sdram_profile
+}
+
+/* Static state must survive app initialization; no App BuildDepends here. */
+static module stm32f746_sdram_profile {
+	source "sdram_profile.c", "sdram_profile.h"
+	depends embox.mem.bitmask
+	depends embox.mem.fixed_heap
+	depends embox.kernel.critical
 }
