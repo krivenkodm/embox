@@ -14,7 +14,9 @@ three NCNN hardware smoke tests:
   blobs are retained for inspection, so this is not a peak-memory benchmark.
 
 All three NCNN tests run automatically before the `tish` shell starts and remain
-available as shell commands.
+available as shell commands. An additional `ncnn_conv_smoke qspi` mode loads
+the same graph and weights directly from external Flash; provision its separate
+image as described below, then invoke it from the shell.
 
 ## Build
 
@@ -77,18 +79,93 @@ lines in a burst stalled host-to-board delivery; resetting the ST-LINK USB
 connection restored it. Three consecutive paced runs passed without resetting
 the STM32.
 
+## Model in QSPI
+
+The tested board reports JEDEC ID `ef4018` (Winbond W25Q128FV/JV), whereas
+ST's BSP flash initialization assumes a Micron N25Q128A. The project-local
+reader reuses the BSP GPIO setup and HAL controller API, checks the JEDEC ID,
+and maps standard SPI read `03h` at 27 MHz through the QUADSPI peripheral.
+It accepts `ef4018` and `20ba18` (Micron); only the Winbond part was tested.
+This initial mode uses one data line. It does not change the flash's QE/status
+registers, erase/program memory, or require the generic QSPI init module.
+The chip must be in standard SPI mode (power-on state and the state used by the
+OpenOCD commands below); another part/mode returns an initialization failure.
+
+The 512-byte smoke image occupies the start of the final 64 KiB sector:
+
+- graph: `0x90ff0000`, 224 bytes;
+- FP32 tag, weights and biases: `0x90ff0100`, 156 bytes;
+- remaining image bytes: `0xff` padding.
+
+The firmware compares both blobs against the compiled fixture before passing
+QSPI pointers to NCNN's pointer-based loaders, which do not take buffer lengths.
+An absent, corrupted or different model is rejected before parsing. This is a
+fixed-fixture hardware test, not a loader for arbitrary models. The compiled
+fixture remains available for the baseline test; QSPI mode passes external
+addresses to NCNN without staging a copy. Internal layer allocations and input,
+intermediate and output tensors use the SDRAM heap. Tensor checks still cover
+all 44 expected values. No large NCNN code sections have been moved yet.
+
+Build the image on a little-endian host from the same shared fixture header:
+
+```sh
+c++ -std=c++11 -Wall -Wextra -Werror \
+  project/ncnn/tools/export_conv_qspi.cpp -o /tmp/export_conv_qspi
+/tmp/export_conv_qspi /tmp/ncnn-conv-qspi.bin
+```
+
+Before the first write, back up **all 16 MiB** and verify the backup. Choose a
+new backup filename and keep it: the final sector may contain factory/user data
+on another board. These commands expect OpenOCD's board configuration to expose
+`stm32f7x.qspi` as 256 sectors of 64 KiB (confirm its probe output first).
+Paths shown below are examples; adapt them without overwriting an old backup.
+
+```sh
+openocd -f board/stm32f746g-disco.cfg \
+  -c "reset_config srst_only srst_nogate connect_assert_srst" \
+  -c "init; reset init; flash probe stm32f7x.qspi; flash read_bank stm32f7x.qspi qspi-before-ncnn.bin 0 0x1000000; reset run; shutdown"
+openocd -f board/stm32f746g-disco.cfg \
+  -c "reset_config srst_only srst_nogate connect_assert_srst" \
+  -c "init; reset init; flash verify_bank stm32f7x.qspi qspi-before-ncnn.bin 0; reset run; shutdown"
+```
+
+Then erase **only sector 255**, program and verify the separate model image:
+
+```sh
+openocd -f board/stm32f746g-disco.cfg \
+  -c "reset_config srst_only srst_nogate connect_assert_srst" \
+  -c "init; reset init; flash erase_sector stm32f7x.qspi 255 255; flash write_bank stm32f7x.qspi /tmp/ncnn-conv-qspi.bin 0xff0000; flash verify_bank stm32f7x.qspi /tmp/ncnn-conv-qspi.bin 0xff0000; reset run; shutdown"
+```
+
+Internal firmware and model are separate files: never concatenate the QSPI
+address gap into `embox.bin`. Flash the internal firmware as above, then run:
+
+```text
+embox> ncnn_conv_smoke qspi
+ncnn_conv_smoke: QSPI JEDEC=ef4018
+ncnn_conv_smoke: QSPI fixture verified param=0x90ff0000 model=0x90ff0100
+...
+ncnn_conv_smoke: PASS model loaded from QSPI
+```
+
+To restore only the modified sector, extract the last 64 KiB from the original
+full backup, erase sector 255, write that sector image at offset `0xff0000`,
+and verify it with `flash verify_bank`. Other sectors need no erasure.
+
 ## Verified memory use
 
-Clean build verified on hardware with Arm GNU Toolchain 14.3.1:
+Clean build verified on hardware with Arm GNU Toolchain 14.3.1
+(base `2e9f005964` plus the QSPI reader):
 
-- internal Flash: 890,432 B / 1 MiB (84.92%)
+- internal Flash: 899,092 B / 1 MiB (85.74%)
 - internal SRAM: 141,888 B / 320 KiB (43.30%)
 - external SDRAM heap: 8 MiB at `0x60000000`
-- QSPI: unused
+- QSPI model image: 512 B in the final 64 KiB sector (separate from the ELF)
 
 ## Next stages
 
-1. Place large read-only model and NCNN sections in QSPI.
+1. Extend the fixed QSPI fixture path for a real model; move large read-only
+   NCNN sections only if the internal Flash budget requires it.
 2. Run MobileNetV3-Small on a fixed 96x96 test input.
 3. Measure inference time and peak SDRAM use before evaluating FP16 or INT8.
 4. Add image input and preprocessing after the memory budget is proven.
