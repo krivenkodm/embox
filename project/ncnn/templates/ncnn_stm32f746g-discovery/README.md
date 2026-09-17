@@ -17,6 +17,10 @@ All three NCNN tests run automatically before the `tish` shell starts and remain
 available as shell commands. An additional `ncnn_conv_smoke qspi` mode loads
 the same graph and weights directly from external Flash; provision its separate
 image as described below, then invoke it from the shell.
+`ncnn_mobilenet_smoke` runs the full MobileNetV3-Small graph on a fixed 96x96
+input using FP32 weights in QSPI and checks all 1000 output logits. Its separate
+image preparation and programming instructions are in
+[the MobileNet guide](../../ncnn_mobilenet_smoke/README.md).
 
 ## Build
 
@@ -142,7 +146,7 @@ address gap into `embox.bin`. Flash the internal firmware as above, then run:
 
 ```text
 embox> ncnn_conv_smoke qspi
-ncnn_conv_smoke: QSPI JEDEC=ef4018
+ncnn_qspi: JEDEC=ef4018
 ncnn_conv_smoke: QSPI fixture verified param=0x90ff0000 model=0x90ff0100
 ...
 ncnn_conv_smoke: PASS model loaded from QSPI
@@ -155,20 +159,20 @@ and verify it with `flash verify_bank`. Other sectors need no erasure.
 ## Verified memory use
 
 Clean build verified on hardware with Arm GNU Toolchain 14.3.1
-(base `2e9f005964` plus the QSPI reader):
+(base `6fe83362b9` plus the MobileNet command):
 
-- internal Flash: 899,092 B / 1 MiB (85.74%)
+- internal Flash: 907,064 B / 1 MiB (86.50%)
 - internal SRAM: 141,888 B / 320 KiB (43.30%)
 - external SDRAM heap: 8 MiB at `0x60000000`
-- QSPI model image: 512 B in the final 64 KiB sector (separate from the ELF)
+- QSPI images: 10,156,800 B for MobileNet at `0x90500000`, plus the
+  512 B convolution fixture at `0x90ff0000` (separate from the ELF)
 
 ## Next stages
 
-1. Extend the fixed QSPI fixture path for a real model; move large read-only
-   NCNN sections only if the internal Flash budget requires it.
-2. Run MobileNetV3-Small on a fixed 96x96 test input.
-3. Measure inference time and peak SDRAM use before evaluating FP16 or INT8.
-4. Add image input and preprocessing after the memory budget is proven.
+1. Measure peak SDRAM use and repeat timing measurements; evaluate quad-data
+   QSPI reads, FP16 or INT8 from this FP32 baseline.
+2. Move large read-only NCNN sections only if the internal Flash budget requires it.
+3. Add real image input and preprocessing after the memory budget is proven.
 
 YOLOv8n is intentionally deferred because its weights alone are much larger
 than the STM32F746's internal Flash.

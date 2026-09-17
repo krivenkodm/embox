@@ -43,7 +43,7 @@ int ncnn_stm32f746_qspi_map(void) {
 			|| HAL_QSPI_Receive(&handle, id, 100) != HAL_OK) {
 		return -1;
 	}
-	printf("ncnn_conv_smoke: QSPI JEDEC=%02x%02x%02x\n", id[0], id[1], id[2]);
+	printf("ncnn_qspi: JEDEC=%02x%02x%02x\n", id[0], id[1], id[2]);
 	if (!((id[0] == 0xef && id[1] == 0x40 && id[2] == 0x18)
 			|| (id[0] == 0x20 && id[1] == 0xba && id[2] == 0x18))) {
 		return -1;
