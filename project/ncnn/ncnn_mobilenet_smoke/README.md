@@ -308,7 +308,9 @@ ncnn_mobilenet_smoke quad photo
 
 Select a read mode explicitly for `photo`; `single photo` also works but is
 slower. Commands without `photo` retain the synthetic 96x96 reference.
-Photo inference remains manual, and this template has no LCD output or camera.
+Photo inference remains manual. The STM32 template now also displays the
+photo and result on LCD; see the [LCD guide](../ncnn_lcd_smoke/README.md) for
+the updated memory map, cache handling and timings. No camera is included.
 
 The MCU decodes JPEG into RGB using a private JPEG-only, scalar `stb_image`
 implementation, then NCNN bilinearly resizes it to 224x224, converts to planar
@@ -394,3 +396,14 @@ subsequent convolution-QSPI, dense and allocation tests also passed. A separate
 same memory peak), as did rejection of a missing read mode or unknown input
 argument. Display and camera buffers must be budgeted separately before
 enabling them.
+
+
+## LCD integration
+
+`photo` now draws the already decoded RGB photo, then publishes the top label
+and inference time after all output and heap checks pass. The 256 KiB display
+reservation is outside the external heap, which starts at `0x60040000` and
+ends at `0x60800000`. The earlier photo-only measurements above remain the
+historical baseline; use the [LCD guide](../ncnn_lcd_smoke/README.md) for current
+firmware sizes, 15.349 s median inference, combined SDRAM budget and checks.
+Display rendering does not change the input or reference tensors.

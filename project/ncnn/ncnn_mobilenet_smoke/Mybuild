@@ -19,6 +19,7 @@ module ncnn_mobilenet_smoke {
 	depends embox.lib.crypt.crc32
 	depends stm32f746_qspi_reader
 	depends stm32f746_sdram_profile
+	depends stm32f746_ncnn_lcd
 }
 
 /* Static state must survive app initialization; no App BuildDepends here. */

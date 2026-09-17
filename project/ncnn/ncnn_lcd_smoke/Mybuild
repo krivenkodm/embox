@@ -1,0 +1,22 @@
+package embox.cmd.ncnn
+
+@App
+@Build(stage=2)
+@AutoCmd
+@Cmd(name="ncnn_lcd_smoke", help="Show the STM32 LCD readiness screen or color bars")
+module ncnn_lcd_smoke {
+	source "main.c", "lcd.h"
+	depends stm32f746_ncnn_lcd
+}
+
+/* BSP and persistent display state must not enter an App BuildDepends closure. */
+@Build(stage=2)
+@BuildDepends(platform.stm32.f7.stm32746g_discovery.bsp)
+@BuildDepends(embox.driver.video.fonts)
+static module stm32f746_ncnn_lcd {
+	source "lcd.c", "lcd_render.c", "lcd_render.h"
+	depends platform.stm32.f7.stm32746g_discovery.bsp
+	depends embox.driver.video.fonts
+	depends embox.lib.crypt.crc32
+	depends embox.mem.fixed_heap
+}

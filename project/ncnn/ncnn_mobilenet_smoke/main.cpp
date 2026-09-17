@@ -18,6 +18,7 @@
 
 extern "C" {
 #include "sdram_profile.h"
+#include "../ncnn_lcd_smoke/lcd.h"
 #include <lib/crypt/crc32.h>
 #include <mem/heap/mspace_malloc.h>
 int ncnn_stm32f746_qspi_map_lines(unsigned int data_lines);
@@ -25,7 +26,7 @@ int ncnn_stm32f746_qspi_map_lines(unsigned int data_lines);
 
 namespace {
 using namespace mobilenet_fixture;
-constexpr uintptr_t kSdramStart = 0x60000000u;
+constexpr uintptr_t kSdramStart = 0x60040000u; /* LCD occupies the first 256 KiB. */
 constexpr uintptr_t kSdramEnd = 0x60800000u;
 static_assert(kImageHeader[2] <= 0x00af0000u, "model overlaps convolution fixture");
 static_assert(kImageHeader[3] == 64 && kImageHeader[5] % 16 == 0, "bad image alignment");
@@ -43,7 +44,9 @@ uint32_t checksum(const unsigned char *data, size_t size) {
 			const_cast<unsigned char *>(data + size)));
 }
 
-int run_inference(const unsigned char *param, const unsigned char *model, RunTimings &times, bool photo) {
+struct PhotoResult { const char *label = nullptr; long milliseconds = -1; };
+
+int run_inference(const unsigned char *param, const unsigned char *model, RunTimings &times, bool photo, PhotoResult &photo_result) {
 	const int input_size = photo ? mobilenet_photo::kInputSize : kInputSize;
 	const float *reference = photo ? mobilenet_photo_fixture::kReference : kReference;
 	CleanupTimer cleanup(times.cleanup);
@@ -90,6 +93,11 @@ int run_inference(const unsigned char *param, const unsigned char *model, RunTim
 			mobilenet_photo::free_rgb(rgb);
 			printf("ncnn_mobilenet_smoke: FAIL JPEG decode/RGB checksum or SDRAM\n");
 			return -3;
+		}
+		if (ncnn_lcd_show_photo(rgb, mobilenet_photo::kSourceWidth, mobilenet_photo::kSourceHeight) != 0) {
+			mobilenet_photo::free_rgb(rgb);
+			printf("ncnn_mobilenet_smoke: FAIL displaying photo\n");
+			return -10;
 		}
 		input = mobilenet_photo::prepare_input(rgb);
 		mobilenet_photo::free_rgb(rgb);
@@ -176,12 +184,16 @@ int run_inference(const unsigned char *param, const unsigned char *model, RunTim
 					rank + 1, top[rank], (double)values[top[rank]]);
 		}
 	}
+	if (photo) {
+		photo_result.label = mobilenetv3_small_label_name(top[0]);
+		photo_result.milliseconds = times.extract;
+	}
 	cleanup.start();
 	return 0;
 }
 } // namespace
 
-static int run_command(unsigned int data_lines, bool photo) {
+static int run_command(unsigned int data_lines, bool photo, PhotoResult &photo_result) {
 	Timer total, step;
 	RunTimings times;
 	if (ncnn_stm32f746_qspi_map_lines(data_lines) != 0) {
@@ -210,7 +222,7 @@ static int run_command(unsigned int data_lines, bool photo) {
 		printf("ncnn_mobilenet_smoke: FAIL external heap unavailable\n");
 		return -5;
 	}
-	const int result = run_inference(param, model, times, photo);
+	const int result = run_inference(param, model, times, photo, photo_result);
 	/* All NCNN objects are destroyed before returning to the caller's heap. */
 	if (mspace_set_heap(previous_heap, nullptr) != 0) {
 		printf("ncnn_mobilenet_smoke: FAIL restoring heap\n");
@@ -246,7 +258,8 @@ int main(int argc, char **argv) {
 		printf("ncnn_mobilenet_smoke: FAIL SDRAM profiling hooks\n");
 		return -8;
 	}
-	const int result = run_command(data_lines, photo);
+	PhotoResult photo_result;
+	const int result = run_command(data_lines, photo, photo_result);
 	struct ncnn_sdram_stats memory;
 	ncnn_sdram_profile_end(&memory);
 	printf("ncnn_mobilenet_smoke: SDRAM bytes capacity=%lu page=%lu baseline=%lu peak=%lu final=%lu min_free=%lu failed_allocs=%lu other_heap_allocs=%lu\n",
@@ -255,8 +268,14 @@ int main(int argc, char **argv) {
 			(unsigned long)memory.final_used, (unsigned long)(memory.capacity - memory.peak),
 			(unsigned long)memory.failed_allocations, (unsigned long)memory.other_heap_allocations);
 	if (memory.final_used != memory.baseline || memory.failed_allocations != 0) {
+		if (photo) ncnn_lcd_show_error();
 		printf("ncnn_mobilenet_smoke: FAIL SDRAM release/allocation\n");
 		return -9;
+	}
+	if (photo && (result != 0 || ncnn_lcd_show_result(photo_result.label, photo_result.milliseconds) != 0)) {
+		ncnn_lcd_show_error();
+		printf("ncnn_mobilenet_smoke: FAIL photo inference or LCD validation\n");
+		return result != 0 ? result : -10;
 	}
 	if (result == 0) {
 		printf("ncnn_mobilenet_smoke: PASS MobileNetV3-Small FP32 %s from QSPI\n",

@@ -1,7 +1,8 @@
 # STM32F746G-DISCO NCNN template
 
 This template brings NCNN inference to the STM32F746G-DISCO with a UART shell,
-the Cortex-M7 hard-float ABI, and an 8 MiB external SDRAM heap. It includes
+the Cortex-M7 hard-float ABI, and 8 MiB external SDRAM (256 KiB reserved
+for LCD, 7.75 MiB for the heap). It includes
 three NCNN hardware smoke tests:
 
 - `ncnn_alloc_smoke` allocates and verifies a 768 KiB `ncnn::Mat` in SDRAM.
@@ -93,13 +94,16 @@ to the board. To close this serial window, press Ctrl+A, release the keys,
 then lowercase `k`, and confirm with `y`. Ctrl+A then `d` only detaches and
 can leave the serial port occupied.
 
-This template outputs to UART and does not initialize or draw to the LCD;
-a blank/white panel alone does not indicate failed inference. Display output
-requires a separate LCD/framebuffer integration and memory budget. Without
-power the board stops, but internal Flash and the QSPI model retain their
-contents. Disconnect only after flash programming/verification has finished
+The LCD now shows `DISPLAY READY` at boot. Run `ncnn_mobilenet_smoke quad photo`
+to show the photograph, inferred class, time and PASS on the board. Use
+`ncnn_lcd_smoke colors` for color bars or `ncnn_lcd_smoke ready` for the startup
+screen. See the [LCD guide](../../ncnn_lcd_smoke/README.md) for reserved memory,
+cache settings, validation and limits.
+
+Without power the board stops, but internal Flash and the QSPI model retain
+their contents. Disconnect only after programming/verification has finished
 and the serial connection is closed. On power-up the existing startup tests
-run; the MobileNet commands still require manual invocation.
+run; MobileNet still requires manual invocation.
 
 ## Model in QSPI
 
@@ -176,23 +180,24 @@ and verify it with `flash verify_bank`. Other sectors need no erasure.
 
 ## Verified memory use
 
-Clean build verified on hardware with Arm GNU Toolchain 14.3.1
-(profiling, single/quad QSPI and the fixed JPEG photo):
+Clean build verified with Arm GNU Toolchain 14.3.1 and the LCD dashboard:
 
-- internal Flash: 973,880 B / 1 MiB (92.88%); 74,696 B remaining
-- internal SRAM: 141,888 B / 320 KiB (43.30%)
-- external SDRAM heap: 8 MiB at `0x60000000`; measured MobileNet peak
-  1,256,256 B of allocated pages for synthetic 96x96, or 6,067,008 B for
-  photo 224x224, leaving 2,305,152 B free at the photo peak; both release fully
-- QSPI images: 10,156,800 B for MobileNet at `0x90500000`, plus the
+- internal Flash: 1010888 B / 1 MiB (96.41%); 37688 B remaining
+- internal SRAM: 141920 B / 320 KiB (43.31%)
+- LCD: 261120-byte RGB565 frame plus 1024-byte guard at `0x60000000`
+- external heap: 7.75 MiB at `0x60040000`; photo 224x224 peak 6067008 B of
+  allocated pages, 2043520 B free at peak, full release after every run
+- combined display reservation + peak heap pages: 6329152 B, excluding
+  15936 B of allocator control
+- QSPI images: unchanged 10156800 B MobileNet at `0x90500000` and
   512 B convolution fixture at `0x90ff0000` (separate from the ELF)
 
 ## Next stages
 
-1. Add LCD output and, if needed, camera or externally supplied image input,
-   budgeting their buffers against the measured 224x224 SDRAM peak.
-2. Evaluate FP16/INT8 accuracy, memory and performance against this FP32 baseline.
-3. Move large read-only NCNN sections only if the internal Flash budget requires it.
+1. Add automatic photo inference at boot if desired; currently it is manual.
+2. Add camera or externally supplied images with a separate buffer budget.
+3. Evaluate FP16/INT8 accuracy, memory and performance against this FP32 baseline.
+4. Move large read-only NCNN sections if the remaining internal Flash is insufficient.
 
 YOLOv8n is intentionally deferred because its weights alone are much larger
 than the STM32F746's internal Flash.
