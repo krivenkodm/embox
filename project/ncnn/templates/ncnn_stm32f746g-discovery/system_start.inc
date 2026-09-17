@@ -3,4 +3,5 @@
 "stl_demo_sort1",
 "ncnn_alloc_smoke",
 "ncnn_inference_smoke",
+"ncnn_conv_smoke",
 "tish",

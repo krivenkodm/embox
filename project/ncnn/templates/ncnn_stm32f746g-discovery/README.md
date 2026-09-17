@@ -1,14 +1,19 @@
 # STM32F746G-DISCO NCNN template
 
 This template brings NCNN inference to the STM32F746G-DISCO with a UART shell,
-the Cortex-M7 hard-float ABI, and an 8 MiB external SDRAM heap. It includes two
-hardware smoke tests:
+the Cortex-M7 hard-float ABI, and an 8 MiB external SDRAM heap. It includes
+three NCNN hardware smoke tests:
 
 - `ncnn_alloc_smoke` allocates and verifies a 768 KiB `ncnn::Mat` in SDRAM.
 - `ncnn_inference_smoke` loads a binary NCNN graph, runs a dense 3-to-2 layer
   with ReLU, and checks the expected `[2.500, 0.000]` output in SDRAM.
+- `ncnn_conv_smoke` verifies a two-channel `Convolution -> ReLU -> Pooling`
+  graph in unpacked FP32, including every intermediate tensor and its SDRAM
+  allocation. The 5x5 input uses a ramp and a checkerboard, two 3x3 filters with
+  biases, a separate ReLU, and valid 2x2 max pooling with stride 1. Intermediate
+  blobs are retained for inspection, so this is not a peak-memory benchmark.
 
-Both tests run automatically before the `tish` shell starts and remain
+All three NCNN tests run automatically before the `tish` shell starts and remain
 available as shell commands.
 
 ## Build
@@ -61,24 +66,32 @@ ends with:
 ```text
 ncnn_inference_smoke: output=[2.500, 0.000]
 ncnn_inference_smoke: PASS dense inference in external SDRAM
+ncnn_conv_smoke: output[0]=[0.000, 10.500, 46.500, 52.500]
+ncnn_conv_smoke: output[1]=[57.500, 39.500, 3.500, 3.500]
+ncnn_conv_smoke: PASS convolution -> ReLU -> pooling in external SDRAM
 ```
+
+When automating UART input on the tested macOS/ST-LINK V2J31M21 setup,
+pace characters (10 ms per character was verified). Sending whole command
+lines in a burst stalled host-to-board delivery; resetting the ST-LINK USB
+connection restored it. Three consecutive paced runs passed without resetting
+the STM32.
 
 ## Verified memory use
 
 Clean build verified on hardware with Arm GNU Toolchain 14.3.1:
 
-- internal Flash: 887,800 B / 1 MiB (84.67%)
+- internal Flash: 890,432 B / 1 MiB (84.92%)
 - internal SRAM: 141,888 B / 320 KiB (43.30%)
 - external SDRAM heap: 8 MiB at `0x60000000`
 - QSPI: unused
 
 ## Next stages
 
-1. Verify a small `Convolution -> ReLU -> Pooling` graph with known output.
-2. Place large read-only model and NCNN sections in QSPI.
-3. Run MobileNetV3-Small on a fixed 96x96 test input.
-4. Measure inference time and peak SDRAM use before evaluating FP16 or INT8.
-5. Add image input and preprocessing after the memory budget is proven.
+1. Place large read-only model and NCNN sections in QSPI.
+2. Run MobileNetV3-Small on a fixed 96x96 test input.
+3. Measure inference time and peak SDRAM use before evaluating FP16 or INT8.
+4. Add image input and preprocessing after the memory budget is proven.
 
 YOLOv8n is intentionally deferred because its weights alone are much larger
 than the STM32F746's internal Flash.
