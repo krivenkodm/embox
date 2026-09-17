@@ -17,11 +17,26 @@
 #include <kernel/irq.h>
 #include <util/field.h>
 
+#include "gic_lpi.h"
 #include "gicv3.h"
 
 #define PPI_PRIOR          0xa0U
 #define SPI_PRIOR          0xa0U
 #define CPU_PRIOR_MASK_LVL 0xffU
+
+/* LPI delivery is optional: the ITS driver overrides these hooks.
+ * With the defaults every LPI INTID looks spurious and the reserved
+ * IRQ window is never touched. */
+__weak int gic_lpi_intid_to_irq(unsigned int intid) {
+	return -1;
+}
+
+__weak unsigned int gic_lpi_irq_to_intid(unsigned int irq) {
+	return 0;
+}
+
+__weak void gic_lpi_set_state(unsigned int irq, int enable) {
+}
 
 enum gic_irq_t {
 	GIC_SGI,
@@ -87,14 +102,19 @@ static void gic_dist_init(void) {
 	}
 
 	for (i = 0; i <= itlines; i++) {
-		/* Deactivate and disable SGIs/PPIs/SPIs */
+		/* Deactivate, clear pending state and disable SGIs/PPIs/SPIs */
 		REG32_STORE(GICD_ICACTIVER(i), ~(uint32_t)0);
+		REG32_STORE(GICD_ICPENDR(i), ~(uint32_t)0);
 		REG32_STORE(GICD_ICENABLER(i), ~(uint32_t)0);
 	}
 
-	/* Enable distributor */
-	REG32_STORE(GICD_CTLR,
-	    GICD_CTLR_GRP0 | GICD_CTLR_GRP1_NS | GICD_CTLR_ARE_NS);
+	/* Enable group-1 forwarding by read-modify-write. The distributor may
+	 * already run in single-security state with affinity routing set up by
+	 * EL3 firmware (ATF/OP-TEE, e.g. RK3568 GIC-600 boots with
+	 * GICD_CTLR = 0x12); overwriting the register would drop ARE and break
+	 * the system-register interface (every IAR1 read then returns the
+	 * spurious INTID 1023). */
+	REG32_ORIN(GICD_CTLR, GICD_CTLR_GRP1_NS | GICD_CTLR_ARE_NS);
 	gic_wait_for_rwp(GICD_CTLR, GICD_CTLR_RWP);
 
 	/* Set SPIs to current CPU only */
@@ -116,6 +136,9 @@ static void gic_redist_init(void) {
 
 	/* Configure SGIs/PPIs as non-secure Group-1 */
 	REG32_STORE(GICR_IGROUPR0, ~(uint32_t)0);
+
+	/* Clear pending state of SGIs/PPIs */
+	REG32_STORE(GICR_ICPENDR0, ~(uint32_t)0);
 
 	/* Set SGIs/PPIs to be level triggered */
 	for (i = 0; i < 2; i++) {
@@ -164,6 +187,11 @@ void irqctrl_enable(unsigned int irq) {
 
 	assert(irq_nr_valid(irq));
 
+	if (irq >= GIC_LPI_IRQ_BASE) {
+		gic_lpi_set_state(irq, 1);
+		return;
+	}
+
 	reg_nr = irq >> 5;
 	value = 1U << (irq & 0x1f);
 
@@ -180,6 +208,11 @@ void irqctrl_disable(unsigned int irq) {
 	uint32_t value;
 
 	assert(irq_nr_valid(irq));
+
+	if (irq >= GIC_LPI_IRQ_BASE) {
+		gic_lpi_set_state(irq, 0);
+		return;
+	}
 
 	reg_nr = irq >> 5;
 	value = 1U << (irq & 0x1f);
@@ -203,11 +236,31 @@ int irqctrl_pending(unsigned int irq) {
 void irqctrl_eoi(unsigned int irq) {
 	assert(irq_nr_valid(irq));
 
+	if (irq >= GIC_LPI_IRQ_BASE) {
+		/* EOI expects the INTID that was acknowledged; the priority
+		 * drop is derived from it, so write back the raw LPI INTID. */
+		ARCH_REG_STORE(ICC_EOIR1_EL1, gic_lpi_irq_to_intid(irq));
+		return;
+	}
+
 	ARCH_REG_STORE(ICC_EOIR1_EL1, irq);
 }
 
 int irqctrl_get_intid(void) {
-	return ARCH_REG_LOAD(ICC_IAR1_EL1) & ICC_IAR1_EL1_INTID_MASK;
+	unsigned int intid;
+
+	intid = ARCH_REG_LOAD(ICC_IAR1_EL1) & ICC_IAR1_EL1_INTID_MASK;
+	/* LPIs never index the flat IRQ table directly: map them into the
+	 * reserved window, unmapped IDs count as spurious. */
+	if (intid >= GIC_LPI_INTID_BASE) {
+		return gic_lpi_intid_to_irq(intid);
+	}
+	/* 1020-1023 are the reserved "no pending group-1 interrupt" values */
+	if (intid >= 1020) {
+		return -1;
+	}
+
+	return intid;
 }
 
 void gicv3_init_el3(void) {
