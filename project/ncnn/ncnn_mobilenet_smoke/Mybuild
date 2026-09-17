@@ -1,0 +1,20 @@
+package embox.cmd.ncnn
+
+@App
+@AutoCmd
+@CxxCmd(name="ncnn_mobilenet_smoke", help="Verify MobileNetV3-Small FP32 96x96 from QSPI")
+@Build(stage=2)
+@BuildDepends(third_party.lib.ncnn.libncnn)
+@BuildDepends(third_party.lib.ncnn.ncnn_public_headers)
+@BuildDepends(third_party.compiler_headers)
+@BuildDepends(embox.cxx.LibCxx)
+module ncnn_mobilenet_smoke {
+	source "main.cpp", "bounded_reader.h", "input.h", "manifest.h", "reference.h"
+
+	depends third_party.lib.ncnn.libncnn
+	depends third_party.lib.ncnn.ncnn_public_headers
+	depends third_party.compiler_headers
+	depends embox.cxx.LibCxx
+	depends embox.lib.crypt.crc32
+	depends stm32f746_qspi_reader
+}
