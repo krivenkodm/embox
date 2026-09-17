@@ -18,9 +18,11 @@ Use an Arm GNU Toolchain installation that contains the bare-metal C++ headers,
 fresh configuration and pass the selected toolchain prefix as the make
 `CROSS_COMPILE` variable.
 
-For the Arm GNU Toolchain 14.3.Rel1 macOS package:
+On macOS, put GNU coreutils and GNU cpio before the system utilities in
+`PATH`. For Apple Silicon Homebrew and the Arm GNU Toolchain 14.3.Rel1 package:
 
 ```sh
+export PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/opt/cpio/bin:/opt/homebrew/opt/make/libexec/gnubin:$PATH"
 gmake confclean
 gmake confload-project/ncnn/ncnn_stm32f746g-discovery \
   CROSS_COMPILE=/Applications/ArmGNUToolchain/14.3.rel1/arm-none-eabi/bin/arm-none-eabi-
@@ -41,6 +43,7 @@ With the board connected through the ST-LINK USB connector:
 
 ```sh
 openocd -f board/stm32f746g-disco.cfg \
+  -c "reset_config srst_only srst_nogate connect_assert_srst" \
   -c "program build/base/bin/embox.bin 0x08000000 verify reset exit"
 ```
 
@@ -62,19 +65,20 @@ ncnn_inference_smoke: PASS dense inference in external SDRAM
 
 ## Verified memory use
 
-With Arm GNU Toolchain 14.3.1:
+Clean build verified on hardware with Arm GNU Toolchain 14.3.1:
 
-- internal Flash: 885,588 B / 1 MiB (84.46%)
+- internal Flash: 887,800 B / 1 MiB (84.67%)
 - internal SRAM: 141,888 B / 320 KiB (43.30%)
 - external SDRAM heap: 8 MiB at `0x60000000`
 - QSPI: unused
 
 ## Next stages
 
-1. Add a compact image-classification model, starting with MobileNetV3-Small.
+1. Verify a small `Convolution -> ReLU -> Pooling` graph with known output.
 2. Place large read-only model and NCNN sections in QSPI.
-3. Measure inference time and peak SDRAM use.
-4. Add image input and preprocessing after the memory budget is proven.
+3. Run MobileNetV3-Small on a fixed 96x96 test input.
+4. Measure inference time and peak SDRAM use before evaluating FP16 or INT8.
+5. Add image input and preprocessing after the memory budget is proven.
 
 YOLOv8n is intentionally deferred because its weights alone are much larger
 than the STM32F746's internal Flash.
