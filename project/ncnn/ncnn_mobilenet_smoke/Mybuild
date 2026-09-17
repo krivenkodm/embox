@@ -9,7 +9,8 @@ package embox.cmd.ncnn
 @BuildDepends(third_party.compiler_headers)
 @BuildDepends(embox.cxx.LibCxx)
 module ncnn_mobilenet_smoke {
-	source "main.cpp", "bounded_reader.h", "input.h", "manifest.h", "reference.h", "timing.h"
+	source "main.cpp", "bounded_reader.h", "input.h", "manifest.h", "reference.h", "timing.h",
+		"photo_input.cpp", "photo_input.h", "photo_jpeg.h", "photo_reference.h"
 
 	depends third_party.lib.ncnn.libncnn
 	depends third_party.lib.ncnn.ncnn_public_headers

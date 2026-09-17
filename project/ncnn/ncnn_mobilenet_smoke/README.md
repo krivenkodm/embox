@@ -5,7 +5,8 @@ fixed synthetic RGB input, 96x96x3, and compares all 1000 output logits with a
 native scalar-NCNN reference. The input value is
 `((3*x + 5*y + 17*channel) % 256) / 255`; mean/std normalization is already in
 the graph. This verifies inference and storage, not classification accuracy
-on real photographs or an optimized memory/performance budget.
+on a dataset or an optimized memory/performance budget. An optional `photo`
+mode below decodes a real JPEG on the MCU and verifies the 224x224 pipeline.
 
 The source arrays are the existing `models/mobilenetv3_small/assets` headers.
 Their 5,095,776-byte weight stream contains FP16 storage. NCNN's generic FP32
@@ -172,7 +173,7 @@ interval. The fields are:
 | `crc` | Graph and weight CRC32 validation |
 | `param` | Net construction, options and binary graph loading |
 | `model` | Weight loading and pipeline setup |
-| `input` | Input allocation/fill, extractor construction and input binding |
+| `input` | Input allocation/fill (or JPEG decode, resize and CRCs), extractor construction and input binding |
 | `extract` | NCNN inference |
 | `verify` | Output shape/location, 1000 reference comparisons and top-five selection |
 | `cleanup` | Destruction of the output, extractor, input and Net |
@@ -218,8 +219,7 @@ allocator without recursion. No QSPI erase or programming was needed.
 
 The clean profiling build occupies 908,440 B / 1 MiB internal Flash (86.64%),
 1,376 B more than the baseline. Internal SRAM remains 141,888 B (43.30%).
-The next controlled experiment is quad-data QSPI with the same checks and
-profiling, followed by real-image input and any precision tradeoffs.
+The subsequent quad-data and real-photo experiments are recorded below.
 
 ## Compare single-line and quad-data QSPI
 
@@ -291,5 +291,106 @@ receive/mapping errors. On actual hardware, only Winbond ef4018 with QE=1 was
 exercised; unsupported-chip/error cases were host tests.
 
 These speedups apply to this synthetic 96x96 FP32 fixture at 27 MHz. Quad is an
-explicit opt-in for now; the next application step is real-image preprocessing
-and recognition, with the same reference comparison where applicable.
+explicit opt-in; the following photo mode uses the same model and checks.
+
+
+## Real JPEG input
+
+The fixed fixture is the existing [cat2.jpg](../data_samples/photos/cat2.jpg):
+295x231 pixels, 25,243 bytes, SHA-256
+`a5e283094ee97c0acbff965fc4def7e896f5c1e7ce33ae3c1629aa7d20b49f75`.
+It is embedded in internal Flash; the model image in QSPI is unchanged.
+With the model already provisioned, flash the updated internal firmware and run:
+
+```text
+ncnn_mobilenet_smoke quad photo
+```
+
+Select a read mode explicitly for `photo`; `single photo` also works but is
+slower. Commands without `photo` retain the synthetic 96x96 reference.
+Photo inference remains manual, and this template has no LCD output or camera.
+
+The MCU decodes JPEG into RGB using a private JPEG-only, scalar `stb_image`
+implementation, then NCNN bilinearly resizes it to 224x224, converts to planar
+FP32 and multiplies by 1/255. This matches the existing project classifier:
+square resize, no center crop, and mean/std normalization already in the graph.
+The native reference uses the same decoding/preprocessing source. JPEG bytes,
+decoded RGB and the entire FP32 input tensor must pass CRC32 checks before
+inference, in addition to the model CRCs and all 1000 logit comparisons.
+RGB, input and output placement are checked against the SDRAM range.
+The RGB buffer is freed before inference; its transient allocation still
+contributes to the measured peak. Only this compiled, checked fixture is
+supported, not arbitrary JPEG dimensions or externally supplied files.
+
+The QSPI header's input-size/reference fields still describe the original
+96x96 synthetic fixture and retain their exact-match validation. The same
+graph accepts 224x224 input; photo mode has a separate compiled reference and
+preprocessing CRCs. No QSPI erase/program operation is needed for this stage.
+
+### Reproduce the photo reference
+
+First complete the native NCNN build and model export described above. Then,
+from the Embox root:
+
+```sh
+c++ -std=c++11 -O2 -ffp-contract=off -Wall -Wextra -Werror \
+  -I/tmp/mobilenet-host-src/ncnn-20250916/src -I/tmp/mobilenet-host-build/src \
+  project/ncnn/tools/prepare_mobilenet_photo.cpp \
+  project/ncnn/ncnn_mobilenet_smoke/photo_input.cpp \
+  /tmp/mobilenet-host-build/src/libncnn.a -o /tmp/prepare_mobilenet_photo
+python3 project/ncnn/tools/export_mobilenet_photo.py \
+  --runner /tmp/prepare_mobilenet_photo --model-dir /tmp/mobilenet-export \
+  --output-dir /tmp/mobilenet-photo
+cmp /tmp/mobilenet-photo/photo_jpeg.h project/ncnn/ncnn_mobilenet_smoke/photo_jpeg.h
+cmp /tmp/mobilenet-photo/photo_reference.h project/ncnn/ncnn_mobilenet_smoke/photo_reference.h
+```
+
+The exporter pins the JPEG and all three model-file hashes, requires all 1000
+original/FP32-storage outputs to match exactly, and writes the generated
+headers, decoded RGB, input/output binaries and `photo-manifest.json`.
+The manifest records byte sizes, SHA-256 and CRC32 for each stage. Reference
+generation and header reproduction passed on the native scalar backend.
+Host ASan/UBSan checks covered valid decoding/preprocessing and rejection of
+null, truncated and wrong-dimension input. The fixed dimensions are checked
+before full decoding and capped at 512 by the private decoder configuration.
+
+### Photo verified on 2026-09-17
+
+Three consecutive quad-mode runs on STM32F746G-DISCO passed RGB/input CRCs
+and all 1000 logits, with maximum reported absolute error 0.000028:
+
+| Measurement | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Input preparation and validation, ms | 146 | 146 | 146 |
+| Inference, ms | 14813 | 14817 | 14815 |
+| Total through heap restoration, ms | 15927 | 15931 | 15929 |
+| Peak allocated SDRAM pages, bytes | 6067008 | 6067008 | 6067008 |
+| Baseline / final allocated bytes | 0 / 0 | 0 / 0 | 0 / 0 |
+
+Minimum free page capacity was 2,305,152 bytes (about 2.20 MiB); no external
+allocation failures or other-heap page allocations were observed. The top
+five outputs were identical across runs:
+
+| Class index | ImageNet label | Raw logit |
+| ---: | --- | ---: |
+| 285 | Egyptian cat | 9.297002 |
+| 750 | quilt | 8.008289 |
+| 282 | tiger cat | 7.288603 |
+| 281 | tabby | 6.480601 |
+| 831 | studio couch | 6.445649 |
+
+These are raw logits, not probabilities or a verified cat-breed diagnosis.
+One photo does not establish dataset accuracy. In a native comparison, resizing
+this same photo to 96x96 instead produced top-1 `quilt`; 224x224 matches the
+existing project classifier's input size and produced the cat category above.
+Do not generalize the earlier synthetic 96x96 timing to this larger input.
+
+The clean firmware occupies 973,880 B / 1 MiB internal Flash (92.88%), with
+74,696 B remaining. Internal SRAM stays at 141,888 B (43.30%). The JPEG,
+decoder, new reference, labels and command code add 64,896 B versus the quad
+comparison firmware. Four startup tests, both synthetic read modes, and the
+subsequent convolution-QSPI, dense and allocation tests also passed. A separate
+`single photo` run passed the same checks (32,799 ms inference, 36,173 ms total,
+same memory peak), as did rejection of a missing read mode or unknown input
+argument. Display and camera buffers must be budgeted separately before
+enabling them.
