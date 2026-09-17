@@ -10,10 +10,20 @@ package embox.cmd.ncnn
 @BuildDepends(embox.cxx.LibCxx)
 module ncnn_conv_smoke {
 
-	source "main.cpp"
+	source "main.cpp", "fixture.h"
 
 	depends third_party.lib.ncnn.libncnn
 	depends third_party.lib.ncnn.ncnn_public_headers
 	depends third_party.compiler_headers
 	depends embox.cxx.LibCxx
+	depends stm32f746_qspi_reader
+}
+
+/* Keep BSP/HAL out of the app's BuildDepends closure: app initialization
+ * restores those modules' data, including the live SystemCoreClock value. */
+@Build(stage=2)
+@BuildDepends(platform.stm32.f7.stm32746g_discovery.bsp)
+static module stm32f746_qspi_reader {
+	source "qspi.c"
+	depends platform.stm32.f7.stm32746g_discovery.bsp
 }

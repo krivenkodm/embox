@@ -1,56 +1,26 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+#include "fixture.h"
 
 #include <mat.h>
 #include <net.h>
 
 extern "C" {
 #include <mem/heap/mspace_malloc.h>
+
+int ncnn_stm32f746_qspi_map(void);
 }
 
 namespace {
 
+using namespace ncnn_conv_fixture;
+
 constexpr uintptr_t kSdramStart = 0x60000000u;
 constexpr uintptr_t kSdramEnd = 0x60800000u;
 constexpr int kChannels = 2;
-
-/*
- * Binary NCNN graph (unpacked FP32, no padding):
- * Input(5x5x2) -> Convolution(3x3, stride 1, 2 outputs, bias)
- *             -> ReLU -> MaxPool(2x2, stride 1) -> Output(2x2x2).
- * NCNN layer indexes: Input=16, Convolution=6, ReLU=26, Pooling=21.
- * Pooling pad_mode=1 selects VALID, with no implicit border extension.
- */
-alignas(4) constexpr int32_t kNetworkParam[] = {
-	7767517, 4, 4,
-	16, 0, 1, 0, 0, 5, 1, 5, 2, 2, -233,
-	6, 1, 1, 0, 1, 0, 2, 1, 3, 3, 1, 4, 0, 5, 1, 6, 36, 9, 0, -233,
-	26, 1, 1, 1, 2, -233,
-	21, 1, 1, 2, 3, 0, 0, 1, 2, 2, 1, 3, 0, 5, 1, -233,
-};
-
-struct alignas(4) ConvModel {
-	uint32_t fp32_tag;
-	float weights[36];
-	float biases[kChannels];
-};
-
-constexpr ConvModel kNetworkModel = {
-	0,
-	{
-		/* Output 0: sum channel 0, plus a diagonal filter on channel 1. */
-		1, 1, 1, 1, 1, 1, 1, 1, 1,
-		1, 0, 0, 0, -1, 0, 0, 0, 1,
-		/* Output 1: negative sum channel 0, plus a cross on channel 1. */
-		-1, -1, -1, -1, -1, -1, -1, -1, -1,
-		0, 1, 0, 1, 0, 1, 0, 1, 0,
-	},
-	{0.5f, -0.5f},
-};
-
-static_assert(sizeof(ConvModel) == 39 * sizeof(uint32_t),
-		"NCNN model must contain one FP32 tag, 36 weights and two biases");
 
 /*
  * Channel 0 is the row-major ramp -12..12; channel 1 is a -2/1 checkerboard.
@@ -121,7 +91,7 @@ bool check_tensor(const char *stage, const ncnn::Mat &tensor,
 	return true;
 }
 
-int run_inference(void) {
+int run_inference(const unsigned char *param, const unsigned char *model) {
 	ncnn::Net net;
 	net.opt.num_threads = 1;
 	/* Keep intermediate blobs to verify every layer separately. */
@@ -133,15 +103,13 @@ int run_inference(void) {
 	net.opt.use_bf16_storage = false;
 	net.opt.use_int8_inference = false;
 
-	const int param_bytes = net.load_param(
-			reinterpret_cast<const unsigned char *>(kNetworkParam));
+	const int param_bytes = net.load_param(param);
 	if (param_bytes != static_cast<int>(sizeof(kNetworkParam))) {
 		printf("ncnn_conv_smoke: FAIL param load (%d/%lu bytes)\n",
 				param_bytes, (unsigned long)sizeof(kNetworkParam));
 		return -2;
 	}
-	const int model_bytes = net.load_model(
-			reinterpret_cast<const unsigned char *>(&kNetworkModel));
+	const int model_bytes = net.load_model(model);
 	if (model_bytes != static_cast<int>(sizeof(kNetworkModel))) {
 		printf("ncnn_conv_smoke: FAIL model load (%d/%lu bytes)\n",
 				model_bytes, (unsigned long)sizeof(kNetworkModel));
@@ -200,8 +168,30 @@ int run_inference(void) {
 } // namespace
 
 int main(int argc, char **argv) {
-	(void)argc;
-	(void)argv;
+	const bool use_qspi = argc == 2 && strcmp(argv[1], "qspi") == 0;
+	if (argc != 1 && !use_qspi) {
+		printf("Usage: ncnn_conv_smoke [qspi]\n");
+		return -1;
+	}
+	const unsigned char *param = reinterpret_cast<const unsigned char *>(kNetworkParam);
+	const unsigned char *model = reinterpret_cast<const unsigned char *>(&kNetworkModel);
+	if (use_qspi) {
+		if (ncnn_stm32f746_qspi_map() != 0) {
+			printf("ncnn_conv_smoke: FAIL QSPI initialization\n");
+			return -9;
+		}
+		param = reinterpret_cast<const unsigned char *>(kQspiParamAddress);
+		model = param + kQspiModelOffset;
+		/* The pointer-based NCNN loader has no length bound. Only admit this
+		 * exact fixed fixture before parsing; blank/corrupt flash is rejected. */
+		if (memcmp(param, kNetworkParam, sizeof(kNetworkParam)) != 0
+				|| memcmp(model, &kNetworkModel, sizeof(kNetworkModel)) != 0) {
+			printf("ncnn_conv_smoke: FAIL QSPI fixture missing or mismatched\n");
+			return -10;
+		}
+		printf("ncnn_conv_smoke: QSPI fixture verified param=0x%08lx model=0x%08lx\n",
+				(unsigned long)param, (unsigned long)model);
+	}
 	printf("ncnn_conv_smoke: FP32 5x5x2 -> conv 3x3x2 -> ReLU -> max pool 2x2x2\n");
 
 	heap_type_t previous_heap;
@@ -209,7 +199,7 @@ int main(int argc, char **argv) {
 		printf("ncnn_conv_smoke: FAIL external heap unavailable\n");
 		return -1;
 	}
-	const int result = run_inference();
+	const int result = run_inference(param, model);
 	/* Destroy NCNN objects before restoring the caller's heap. */
 	if (mspace_set_heap(previous_heap, nullptr) != 0) {
 		printf("ncnn_conv_smoke: FAIL restoring heap\n");
@@ -217,6 +207,9 @@ int main(int argc, char **argv) {
 	}
 	if (result == 0) {
 		printf("ncnn_conv_smoke: PASS convolution -> ReLU -> pooling in external SDRAM\n");
+		if (use_qspi) {
+			printf("ncnn_conv_smoke: PASS model loaded from QSPI\n");
+		}
 	}
 	return result;
 }
