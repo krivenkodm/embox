@@ -220,3 +220,76 @@ The clean profiling build occupies 908,440 B / 1 MiB internal Flash (86.64%),
 1,376 B more than the baseline. Internal SRAM remains 141,888 B (43.30%).
 The next controlled experiment is quad-data QSPI with the same checks and
 profiling, followed by real-image input and any precision tradeoffs.
+
+## Compare single-line and quad-data QSPI
+
+The command defaults to the original one-line data mode. To compare modes in
+one firmware image, alternate these commands three times after a reset:
+
+```text
+ncnn_mobilenet_smoke single
+ncnn_mobilenet_smoke quad
+```
+
+Both use a 27 MHz QSPI clock (216 MHz HCLK, prescaler 7), the same model,
+96x96 input, profiling and all 1000 reference comparisons. `single` uses 03h;
+`quad` uses Winbond's 6Bh quad-output read: one-line instruction and 24-bit
+address, eight dummy clocks, then four data lines. See section 8.2.9 of the
+[Winbond W25Q128FV datasheet](https://files.waveshare.com/upload/4/46/W25Q128fv.pdf)
+and the [W25Q128JV datasheet](https://www.mouser.com/datasheet/2/949/Winbond_Electronics_Corporation_09_06_2024_W25Q128-3501276.pdf).
+This is quad-output SPI, not four-line QPI instruction mode or 6Bh at a higher
+clock. The existing convolution-QSPI command still selects single-line mode.
+
+Quad mode is restricted to the tested Winbond JEDEC ID `ef4018` and requires
+an existing QE=1 in SR2. The tested board already has SR1=00 / SR2=02. The
+helper only reads these registers (05h/35h); it never issues Write Enable,
+status writes, program or erase commands. If QE is clear, quad returns an
+explicit error; single mode remains available. Micron `20ba18` remains allowed
+only in single mode. No model image conversion or QSPI reprogramming is needed.
+
+Before configuring either mode, the helper invalidates D-cache entries for
+the entire aligned 16 MiB read-only QSPI window. This prevents previously
+cached contents from masking an incorrect bus mode and gives both modes the
+same cache preparation. Cache maintenance and diagnostic output are included
+in the `qspi` timing field. No ELF code or mutable data occupies that window.
+
+The mode diagnostic prints actual selected instruction, data lines and dummy
+cycles. All existing CRC, bounded-loader, SDRAM placement, reference and
+memory-release checks still run. A failed hardware comparison is a failure,
+not a silent fallback from quad to single.
+
+### Same-firmware comparison verified on 2026-09-17
+
+Three alternating single/quad pairs produced these times in milliseconds:
+
+| Stage | Single runs | Quad runs | Median speedup |
+| --- | --- | --- | ---: |
+| CRC | 3010 / 3010 / 3010 | 752 / 753 / 752 | 4.00x |
+| Inference | 8187 / 8191 / 8190 | 3242 / 3240 / 3245 | 2.53x |
+| Total through heap restoration | 11409 / 11414 / 11413 | 4205 / 4203 / 4207 | 2.71x |
+
+QSPI setup including cache preparation was 27 ms for both modes. Graph loading
+was 91 ms single and 89 ms quad; weights/pipeline 2 ms, input 4 ms and cleanup
+29 ms in both. The larger setup time versus the previous firmware includes the
+new full-window cache invalidation and status/mode diagnostics. Use the paired
+results above for the speedup comparison.
+
+All six runs passed all 1000 logits with the same reported maximum error
+0.000017 and peak allocated SDRAM pages of 1,256,256 bytes. Baseline/final
+usage remained zero; there were no failed external or observed other-heap page
+allocations. Top-five indexes and reported logits were identical. SR1/SR2
+remained 00/02 throughout. The default command was also verified as single mode,
+and QSPI convolution, dense inference and 768 KiB allocation passed afterward.
+A separate direct quad run immediately after reset also passed (3243 ms inference,
+4206 ms total), as did rejection of an invalid argument and subsequent commands.
+
+Clean build and verified internal Flash programming passed. The image occupies
+908,984 B (86.69%), 544 B more than the profiling firmware; internal SRAM remains
+141,888 B. A host HAL mock verified the read-only command sequence and rejection
+of QE=0, Micron quad, unknown IDs, busy status, invalid line counts and HAL
+receive/mapping errors. On actual hardware, only Winbond ef4018 with QE=1 was
+exercised; unsupported-chip/error cases were host tests.
+
+These speedups apply to this synthetic 96x96 FP32 fixture at 27 MHz. Quad is an
+explicit opt-in for now; the next application step is real-image preprocessing
+and recognition, with the same reference comparison where applicable.

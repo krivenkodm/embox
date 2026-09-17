@@ -16,7 +16,7 @@ extern "C" {
 #include "sdram_profile.h"
 #include <lib/crypt/crc32.h>
 #include <mem/heap/mspace_malloc.h>
-int ncnn_stm32f746_qspi_map(void);
+int ncnn_stm32f746_qspi_map_lines(unsigned int data_lines);
 }
 
 namespace {
@@ -141,10 +141,10 @@ int run_inference(const unsigned char *param, const unsigned char *model, RunTim
 }
 } // namespace
 
-static int run_command() {
+static int run_command(unsigned int data_lines) {
 	Timer total, step;
 	RunTimings times;
-	if (ncnn_stm32f746_qspi_map() != 0) {
+	if (ncnn_stm32f746_qspi_map_lines(data_lines) != 0) {
 		printf("ncnn_mobilenet_smoke: FAIL QSPI initialization\n");
 		return -2;
 	}
@@ -192,16 +192,18 @@ static int run_command() {
 }
 
 int main(int argc, char **argv) {
-	(void)argv;
-	if (argc != 1) {
-		printf("Usage: ncnn_mobilenet_smoke\n");
+	unsigned int data_lines = 1;
+	if (argc == 2 && strcmp(argv[1], "quad") == 0) {
+		data_lines = 4;
+	} else if (argc != 1 && !(argc == 2 && strcmp(argv[1], "single") == 0)) {
+		printf("Usage: ncnn_mobilenet_smoke [single|quad]\n");
 		return -1;
 	}
 	if (ncnn_sdram_profile_selftest() != 0 || ncnn_sdram_profile_begin() != 0) {
 		printf("ncnn_mobilenet_smoke: FAIL SDRAM profiling hooks\n");
 		return -8;
 	}
-	const int result = run_command();
+	const int result = run_command(data_lines);
 	struct ncnn_sdram_stats memory;
 	ncnn_sdram_profile_end(&memory);
 	printf("ncnn_mobilenet_smoke: SDRAM bytes capacity=%lu page=%lu baseline=%lu peak=%lu final=%lu min_free=%lu failed_allocs=%lu other_heap_allocs=%lu\n",

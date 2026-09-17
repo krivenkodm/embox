@@ -159,9 +159,9 @@ and verify it with `flash verify_bank`. Other sectors need no erasure.
 ## Verified memory use
 
 Clean build verified on hardware with Arm GNU Toolchain 14.3.1
-(base `df5c2c7bf2` plus MobileNet memory/timing profiling):
+(profiling plus the single/quad QSPI comparison):
 
-- internal Flash: 908,440 B / 1 MiB (86.64%)
+- internal Flash: 908,984 B / 1 MiB (86.69%)
 - internal SRAM: 141,888 B / 320 KiB (43.30%)
 - external SDRAM heap: 8 MiB at `0x60000000`; measured MobileNet peak
   1,256,256 B of allocated pages, with 7,115,904 B free at peak and full release
@@ -170,8 +170,10 @@ Clean build verified on hardware with Arm GNU Toolchain 14.3.1
 
 ## Next stages
 
-1. Compare quad-data QSPI with the measured single-line profile (about 3.01 s
-   CRC validation and 8.19 s inference); evaluate FP16 or INT8 from this FP32 baseline.
+1. Use `ncnn_mobilenet_smoke quad` for the verified Winbond quad-data mode:
+   about 0.752 s CRC and 3.242 s inference versus 3.010 s and 8.190 s single-line
+   (medians of three paired runs at 27 MHz). See the MobileNet README for limits.
+   Evaluate real-image preprocessing and FP16/INT8 tradeoffs from this FP32 baseline.
 2. Move large read-only NCNN sections only if the internal Flash budget requires it.
 3. Add real image input and preprocessing after the memory budget is proven.
 
