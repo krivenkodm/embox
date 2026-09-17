@@ -21,6 +21,8 @@ image as described below, then invoke it from the shell.
 input using FP32 weights in QSPI and checks all 1000 output logits. Its separate
 image preparation and programming instructions are in
 [the MobileNet guide](../../ncnn_mobilenet_smoke/README.md).
+`ncnn_mobilenet_smoke quad photo` decodes the built-in `cat2.jpg`, resizes it
+to 224x224 on the MCU, and verifies preprocessing and all 1000 photo logits.
 
 ## Build
 
@@ -82,6 +84,22 @@ pace characters (10 ms per character was verified). Sending whole command
 lines in a burst stalled host-to-board delivery; resetting the ST-LINK USB
 connection restored it. Three consecutive paced runs passed without resetting
 the STM32.
+
+## Console, power and display
+
+On macOS, `screen /dev/cu.usbmodem1103 115200` is another serial-terminal
+option; use the actual device name on your Mac. The `embox>` prompt belongs
+to the board. To close this serial window, press Ctrl+A, release the keys,
+then lowercase `k`, and confirm with `y`. Ctrl+A then `d` only detaches and
+can leave the serial port occupied.
+
+This template outputs to UART and does not initialize or draw to the LCD;
+a blank/white panel alone does not indicate failed inference. Display output
+requires a separate LCD/framebuffer integration and memory budget. Without
+power the board stops, but internal Flash and the QSPI model retain their
+contents. Disconnect only after flash programming/verification has finished
+and the serial connection is closed. On power-up the existing startup tests
+run; the MobileNet commands still require manual invocation.
 
 ## Model in QSPI
 
@@ -159,23 +177,22 @@ and verify it with `flash verify_bank`. Other sectors need no erasure.
 ## Verified memory use
 
 Clean build verified on hardware with Arm GNU Toolchain 14.3.1
-(profiling plus the single/quad QSPI comparison):
+(profiling, single/quad QSPI and the fixed JPEG photo):
 
-- internal Flash: 908,984 B / 1 MiB (86.69%)
+- internal Flash: 973,880 B / 1 MiB (92.88%); 74,696 B remaining
 - internal SRAM: 141,888 B / 320 KiB (43.30%)
 - external SDRAM heap: 8 MiB at `0x60000000`; measured MobileNet peak
-  1,256,256 B of allocated pages, with 7,115,904 B free at peak and full release
+  1,256,256 B of allocated pages for synthetic 96x96, or 6,067,008 B for
+  photo 224x224, leaving 2,305,152 B free at the photo peak; both release fully
 - QSPI images: 10,156,800 B for MobileNet at `0x90500000`, plus the
   512 B convolution fixture at `0x90ff0000` (separate from the ELF)
 
 ## Next stages
 
-1. Use `ncnn_mobilenet_smoke quad` for the verified Winbond quad-data mode:
-   about 0.752 s CRC and 3.242 s inference versus 3.010 s and 8.190 s single-line
-   (medians of three paired runs at 27 MHz). See the MobileNet README for limits.
-   Evaluate real-image preprocessing and FP16/INT8 tradeoffs from this FP32 baseline.
-2. Move large read-only NCNN sections only if the internal Flash budget requires it.
-3. Add real image input and preprocessing after the memory budget is proven.
+1. Add LCD output and, if needed, camera or externally supplied image input,
+   budgeting their buffers against the measured 224x224 SDRAM peak.
+2. Evaluate FP16/INT8 accuracy, memory and performance against this FP32 baseline.
+3. Move large read-only NCNN sections only if the internal Flash budget requires it.
 
 YOLOv8n is intentionally deferred because its weights alone are much larger
 than the STM32F746's internal Flash.

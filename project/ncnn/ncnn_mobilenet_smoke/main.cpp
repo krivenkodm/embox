@@ -11,6 +11,10 @@
 #include "manifest.h"
 #include "reference.h"
 #include "timing.h"
+#include "photo_input.h"
+#include "photo_jpeg.h"
+#include "photo_reference.h"
+#include "../models/mobilenetv3_small/imagenet1000_labels.h"
 
 extern "C" {
 #include "sdram_profile.h"
@@ -39,7 +43,9 @@ uint32_t checksum(const unsigned char *data, size_t size) {
 			const_cast<unsigned char *>(data + size)));
 }
 
-int run_inference(const unsigned char *param, const unsigned char *model, RunTimings &times) {
+int run_inference(const unsigned char *param, const unsigned char *model, RunTimings &times, bool photo) {
+	const int input_size = photo ? mobilenet_photo::kInputSize : kInputSize;
+	const float *reference = photo ? mobilenet_photo_fixture::kReference : kReference;
 	CleanupTimer cleanup(times.cleanup);
 	Timer step;
 	ncnn::Net net;
@@ -69,16 +75,44 @@ int run_inference(const unsigned char *param, const unsigned char *model, RunTim
 			(unsigned long)weights.referenced());
 
 	step.reset();
-	ncnn::Mat input(kInputSize, kInputSize, kInputChannels);
-	if (input.empty() || !in_sdram(input)) {
-		printf("ncnn_mobilenet_smoke: FAIL input allocation in SDRAM\n");
-		return -3;
-	}
-	for (int q = 0; q < kInputChannels; ++q) {
-		float *channel = input.channel(q);
-		for (int y = 0; y < kInputSize; ++y) {
-			for (int x = 0; x < kInputSize; ++x) {
-				channel[y * kInputSize + x] = input_value(q, y, x);
+	ncnn::Mat input;
+	if (photo) {
+		using namespace mobilenet_photo_fixture;
+		if (checksum(kJpeg, sizeof(kJpeg)) != kJpegCrc) {
+			printf("ncnn_mobilenet_smoke: FAIL JPEG checksum\n");
+			return -3;
+		}
+		unsigned char *rgb = mobilenet_photo::decode_rgb(kJpeg, sizeof(kJpeg));
+		const uintptr_t address = reinterpret_cast<uintptr_t>(rgb);
+		if (!rgb || address < kSdramStart || address >= kSdramEnd
+				|| mobilenet_photo::kRgbBytes > kSdramEnd - address
+				|| checksum(rgb, mobilenet_photo::kRgbBytes) != kRgbCrc) {
+			mobilenet_photo::free_rgb(rgb);
+			printf("ncnn_mobilenet_smoke: FAIL JPEG decode/RGB checksum or SDRAM\n");
+			return -3;
+		}
+		input = mobilenet_photo::prepare_input(rgb);
+		mobilenet_photo::free_rgb(rgb);
+		if (input.empty() || !in_sdram(input) || input.elempack != 1
+				|| input.total() * input.elemsize != mobilenet_photo::kInputBytes
+				|| checksum(static_cast<const unsigned char *>(input.data),
+					mobilenet_photo::kInputBytes) != kInputCrc) {
+			printf("ncnn_mobilenet_smoke: FAIL photo preprocessing checksum/shape/SDRAM\n");
+			return -3;
+		}
+		printf("ncnn_mobilenet_smoke: photo cat2.jpg JPEG 295x231 -> RGB -> 224x224 CHW /255; RGB/input CRC verified\n");
+	} else {
+		input.create(kInputSize, kInputSize, kInputChannels);
+		if (input.empty() || !in_sdram(input)) {
+			printf("ncnn_mobilenet_smoke: FAIL input allocation in SDRAM\n");
+			return -3;
+		}
+		for (int q = 0; q < kInputChannels; ++q) {
+			float *channel = input.channel(q);
+			for (int y = 0; y < kInputSize; ++y) {
+				for (int x = 0; x < kInputSize; ++x) {
+					channel[y * kInputSize + x] = input_value(q, y, x);
+				}
 			}
 		}
 	}
@@ -88,8 +122,8 @@ int run_inference(const unsigned char *param, const unsigned char *model, RunTim
 		return -4;
 	}
 	times.input = step.milliseconds();
-	printf("ncnn_mobilenet_smoke: inference 96x96x3, 138 layers, input=0x%08lx\n",
-			(unsigned long)input.data);
+	printf("ncnn_mobilenet_smoke: inference %dx%dx3, 138 layers, input=0x%08lx\n",
+			input_size, input_size, (unsigned long)input.data);
 	ncnn::Mat output;
 	step.reset();
 	const int result = ex.extract(kOutputBlob, output);
@@ -106,13 +140,13 @@ int run_inference(const unsigned char *param, const unsigned char *model, RunTim
 	float max_error = 0;
 	int top[5] = {-1, -1, -1, -1, -1};
 	for (int i = 0; i < kOutputSize; ++i) {
-		const float expected_abs = kReference[i] < 0 ? -kReference[i] : kReference[i];
+		const float expected_abs = reference[i] < 0 ? -reference[i] : reference[i];
 		const float tolerance = 0.002f + 0.0002f * expected_abs;
-		const float delta = values[i] - kReference[i];
+		const float delta = values[i] - reference[i];
 		/* This interval test rejects NaN and infinity too. */
 		if (!(delta >= -tolerance && delta <= tolerance)) {
 			printf("ncnn_mobilenet_smoke: FAIL logit[%d] actual=%f expected=%f\n",
-					i, (double)values[i], (double)kReference[i]);
+					i, (double)values[i], (double)reference[i]);
 			return -6;
 		}
 		const float absolute = delta < 0 ? -delta : delta;
@@ -133,15 +167,21 @@ int run_inference(const unsigned char *param, const unsigned char *model, RunTim
 	printf("ncnn_mobilenet_smoke: 1000 logits verified, max_abs_error=%f output=0x%08lx\n",
 			(double)max_error, (unsigned long)output.data);
 	for (int rank = 0; rank < 5; ++rank) {
-		printf("ncnn_mobilenet_smoke: top%d class=%d logit=%f\n",
-				rank + 1, top[rank], (double)values[top[rank]]);
+		if (photo) {
+			printf("ncnn_mobilenet_smoke: top%d class=%d logit=%f label=%s\n",
+					rank + 1, top[rank], (double)values[top[rank]],
+					mobilenetv3_small_label_name(top[rank]));
+		} else {
+			printf("ncnn_mobilenet_smoke: top%d class=%d logit=%f\n",
+					rank + 1, top[rank], (double)values[top[rank]]);
+		}
 	}
 	cleanup.start();
 	return 0;
 }
 } // namespace
 
-static int run_command(unsigned int data_lines) {
+static int run_command(unsigned int data_lines, bool photo) {
 	Timer total, step;
 	RunTimings times;
 	if (ncnn_stm32f746_qspi_map_lines(data_lines) != 0) {
@@ -170,7 +210,7 @@ static int run_command(unsigned int data_lines) {
 		printf("ncnn_mobilenet_smoke: FAIL external heap unavailable\n");
 		return -5;
 	}
-	const int result = run_inference(param, model, times);
+	const int result = run_inference(param, model, times, photo);
 	/* All NCNN objects are destroyed before returning to the caller's heap. */
 	if (mspace_set_heap(previous_heap, nullptr) != 0) {
 		printf("ncnn_mobilenet_smoke: FAIL restoring heap\n");
@@ -193,17 +233,20 @@ static int run_command(unsigned int data_lines) {
 
 int main(int argc, char **argv) {
 	unsigned int data_lines = 1;
-	if (argc == 2 && strcmp(argv[1], "quad") == 0) {
-		data_lines = 4;
-	} else if (argc != 1 && !(argc == 2 && strcmp(argv[1], "single") == 0)) {
-		printf("Usage: ncnn_mobilenet_smoke [single|quad]\n");
+	const bool photo = argc == 3 && strcmp(argv[2], "photo") == 0;
+	if (argc < 1 || argc > 3 || (argc == 3 && !photo)
+			|| (argc >= 2 && strcmp(argv[1], "single") != 0 && strcmp(argv[1], "quad") != 0)) {
+		printf("Usage: ncnn_mobilenet_smoke [single|quad] [photo]\n");
 		return -1;
+	}
+	if (argc >= 2 && strcmp(argv[1], "quad") == 0) {
+		data_lines = 4;
 	}
 	if (ncnn_sdram_profile_selftest() != 0 || ncnn_sdram_profile_begin() != 0) {
 		printf("ncnn_mobilenet_smoke: FAIL SDRAM profiling hooks\n");
 		return -8;
 	}
-	const int result = run_command(data_lines);
+	const int result = run_command(data_lines, photo);
 	struct ncnn_sdram_stats memory;
 	ncnn_sdram_profile_end(&memory);
 	printf("ncnn_mobilenet_smoke: SDRAM bytes capacity=%lu page=%lu baseline=%lu peak=%lu final=%lu min_free=%lu failed_allocs=%lu other_heap_allocs=%lu\n",
@@ -216,7 +259,8 @@ int main(int argc, char **argv) {
 		return -9;
 	}
 	if (result == 0) {
-		printf("ncnn_mobilenet_smoke: PASS MobileNetV3-Small FP32 96x96 from QSPI\n");
+		printf("ncnn_mobilenet_smoke: PASS MobileNetV3-Small FP32 %s from QSPI\n",
+				photo ? "224x224 photo" : "96x96");
 	}
 	return result;
 }
