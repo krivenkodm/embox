@@ -4,4 +4,5 @@
 "ncnn_alloc_smoke",
 "ncnn_inference_smoke",
 "ncnn_conv_smoke",
+"ncnn_mobilenet_smoke quad photo",
 "tish",

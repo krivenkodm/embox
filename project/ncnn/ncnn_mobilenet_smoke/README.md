@@ -108,9 +108,12 @@ Programming and verification can take several minutes through ST-LINK. The ELF
 linker reports no QSPI usage because this model is a separate image. Never
 append the QSPI address gap to the internal firmware binary.
 
-Run `ncnn_mobilenet_smoke` from the UART shell. It is intentionally manual so a
-fresh board without the external image still boots the existing tests. Missing
-headers or mismatched payload checksums return a failure before NCNN parsing.
+Run `ncnn_mobilenet_smoke` from the UART shell for the synthetic 96x96 test.
+The STM32 template automatically runs `ncnn_mobilenet_smoke quad photo` once
+before the shell; see [the template guide](../templates/ncnn_stm32f746g-discovery/README.md)
+for its QSPI prerequisites and boot-stack configuration. Missing headers or
+mismatched payload checksums return a failure before NCNN parsing, and the
+startup script continues to the shell with its default `stop_on_error=false`.
 After the reference comparison the command prints the top five raw logits
 (not softmax probabilities), `extract` time and a final PASS after heap restore.
 Extraction time excludes CRC validation, model loading and input preparation.
@@ -300,7 +303,8 @@ The fixed fixture is the existing [cat2.jpg](../data_samples/photos/cat2.jpg):
 295x231 pixels, 25,243 bytes, SHA-256
 `a5e283094ee97c0acbff965fc4def7e896f5c1e7ce33ae3c1629aa7d20b49f75`.
 It is embedded in internal Flash; the model image in QSPI is unchanged.
-With the model already provisioned, flash the updated internal firmware and run:
+With the model already provisioned, flash the updated internal firmware. Photo
+inference runs automatically once at boot; to repeat it from the shell, run:
 
 ```text
 ncnn_mobilenet_smoke quad photo
@@ -308,8 +312,8 @@ ncnn_mobilenet_smoke quad photo
 
 Select a read mode explicitly for `photo`; `single photo` also works but is
 slower. Commands without `photo` retain the synthetic 96x96 reference.
-Photo inference remains manual. The STM32 template now also displays the
-photo and result on LCD; see the [LCD guide](../ncnn_lcd_smoke/README.md) for
+The STM32 template displays the photo and result on LCD, including at boot;
+see the [LCD guide](../ncnn_lcd_smoke/README.md) for
 the updated memory map, cache handling and timings. No camera is included.
 
 The MCU decodes JPEG into RGB using a private JPEG-only, scalar `stb_image`

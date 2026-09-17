@@ -24,6 +24,8 @@ image preparation and programming instructions are in
 [the MobileNet guide](../../ncnn_mobilenet_smoke/README.md).
 `ncnn_mobilenet_smoke quad photo` decodes the built-in `cat2.jpg`, resizes it
 to 224x224 on the MCU, and verifies preprocessing and all 1000 photo logits.
+The startup script runs this photo command once after the small tests and before
+`tish`, displaying the photo and result without serial input.
 
 ## Build
 
@@ -94,16 +96,31 @@ to the board. To close this serial window, press Ctrl+A, release the keys,
 then lowercase `k`, and confirm with `y`. Ctrl+A then `d` only detaches and
 can leave the serial port occupied.
 
-The LCD now shows `DISPLAY READY` at boot. Run `ncnn_mobilenet_smoke quad photo`
-to show the photograph, inferred class, time and PASS on the board. Use
+At boot the LCD briefly shows `DISPLAY READY`, then the built-in photograph
+and `RUNNING...`. After inference and all checks it displays the inferred class,
+time and `PASS`. Allow about 17 seconds for the result and the `embox>` prompt.
+No serial terminal or command is required. To repeat inference from the shell,
+run `ncnn_mobilenet_smoke quad photo`. Use
 `ncnn_lcd_smoke colors` for color bars or `ncnn_lcd_smoke ready` for the startup
 screen. See the [LCD guide](../../ncnn_lcd_smoke/README.md) for reserved memory,
 cache settings, validation and limits.
 
 Without power the board stops, but internal Flash and the QSPI model retain
 their contents. Disconnect only after programming/verification has finished
-and the serial connection is closed. On power-up the existing startup tests
-run; MobileNet still requires manual invocation.
+and the serial connection is closed. On power-up the startup tests and one
+photo inference run automatically again. The photo is built into the firmware;
+this does not capture a new image.
+
+Automatic photo mode requires the separately provisioned MobileNet QSPI image
+and a supported Winbond chip with QE already set to 1, as described in the
+[MobileNet guide](../../ncnn_mobilenet_smoke/README.md). Initialization and model
+validation failures return to the startup script, which continues to `tish`
+with the default `stop_on_error=false`. They do not erase or program QSPI.
+
+The boot stack is 16 KiB, matching ordinary command threads. Startup commands
+run directly on the boot thread: the former 8 KiB stack overflowed during
+NCNN's recursive graph traversal, although manual invocation worked. Keep this
+stack budget when enabling inference in `system_start.inc`.
 
 ## Model in QSPI
 
@@ -180,24 +197,44 @@ and verify it with `flash verify_bank`. Other sectors need no erasure.
 
 ## Verified memory use
 
-Clean build verified with Arm GNU Toolchain 14.3.1 and the LCD dashboard:
+Clean build verified with Arm GNU Toolchain 14.3.1, LCD and automatic photo mode:
 
-- internal Flash: 1010888 B / 1 MiB (96.41%); 37688 B remaining
-- internal SRAM: 141920 B / 320 KiB (43.31%)
+- internal Flash: 1010892 B / 1 MiB (96.41%); 37684 B remaining
+- internal SRAM: 150112 B / 320 KiB (45.81%), including the 16 KiB boot stack
 - LCD: 261120-byte RGB565 frame plus 1024-byte guard at `0x60000000`
 - external heap: 7.75 MiB at `0x60040000`; photo 224x224 peak 6067008 B of
-  allocated pages, 2043520 B free at peak, full release after every run
+  allocated pages in the manual LCD test, 2043520 B free at peak; boot mode
+  uses 6066752 B with 2043776 B free, with full release after every run
 - combined display reservation + peak heap pages: 6329152 B, excluding
   15936 B of allocator control
 - QSPI images: unchanged 10156800 B MobileNet at `0x90500000` and
   512 B convolution fixture at `0x90ff0000` (separate from the ELF)
 
+## Autostart validation on 2026-09-17
+
+One boot after programming and two hardware resets each ran the photo test once,
+checked all 1000 outputs (maximum reported absolute error 0.000028), displayed
+`Egyptian cat` (285) / `PASS`, and reached `embox>`. The serial capture transmitted
+zero bytes on each boot. Inference times were 14875 / 14883 / 14879 ms; totals
+through heap restoration were 16086 / 16094 / 16090 ms. The two timed reset
+captures reached the shell 16.338 / 16.334 s after console initialization.
+These are reset tests, not a physical disconnect/reconnect power-cycle test.
+
+At boot the allocated-page peak was 6066752 B with 2043776 B free. Baseline,
+final allocation, failed allocations and allocations in other heaps were all
+zero. All three LCD checks per boot reported intact guards, zero LTDC errors
+and a 216 MHz system clock; the RUNNING frame CRC stayed unchanged across
+inference. The former 8 KiB boot stack had crossed its lower bound: GDB captured
+PSP `0x20009d18` below stack start `0x2000a100`, during recursive graph traversal.
+The template now reserves 16 KiB for that stack (+8192 B internal SRAM).
+A subsequent manual photo command also passed all 1000 outputs and LCD checks,
+restored the heap, and returned to the shell (15350 ms inference).
+
 ## Next stages
 
-1. Add automatic photo inference at boot if desired; currently it is manual.
-2. Add camera or externally supplied images with a separate buffer budget.
-3. Evaluate FP16/INT8 accuracy, memory and performance against this FP32 baseline.
-4. Move large read-only NCNN sections if the remaining internal Flash is insufficient.
+1. Add camera or externally supplied images with a separate buffer budget.
+2. Evaluate FP16/INT8 accuracy, memory and performance against this FP32 baseline.
+3. Move large read-only NCNN sections if the remaining internal Flash is insufficient.
 
 YOLOv8n is intentionally deferred because its weights alone are much larger
 than the STM32F746's internal Flash.

@@ -6,7 +6,9 @@ RGB565 drawing, without changing the common Embox video driver or vendor BSP.
 Keep BSP/HAL outside every App `BuildDepends` closure so command initialization
 cannot restore live peripheral state or `SystemCoreClock`.
 
-From `embox>`:
+The startup script then runs one photo inference automatically before the shell.
+Allow about 17 seconds after reset for the final result; UART input is optional.
+To test the display or repeat inference from `embox>`:
 
 ```text
 ncnn_lcd_smoke colors
@@ -18,8 +20,9 @@ The first command displays eight solid color bars; `ready` restores the startup
 screen. Photo mode shows the decoded JPEG and `RUNNING...`, then the actual
 top-1 ImageNet label, inference time and `PASS` only after the existing 1000
 output and heap-release checks succeed. Failures display `FAILED` and leave
-details in UART. Photo inference is still manual; powering up alone shows the
-readiness screen. No camera or automatic inference is added in this stage.
+details in UART. The built-in photograph is reused on each boot; no camera is
+included. See the [template guide](../templates/ncnn_stm32f746g-discovery/README.md)
+for QSPI prerequisites and the boot-thread stack budget.
 
 The on-screen photo preserves its original aspect ratio using nearest-neighbor
 scaling. This is separate from the unchanged, CRC-verified NCNN preprocessing:
@@ -53,7 +56,7 @@ The profiler reports **heap pages only**, excluding the separate 262144-byte
 display reservation and allocator control. Add the display reservation to heap
 peak when budgeting SDRAM. Neither QSPI model nor status registers are written.
 
-## Verified on 2026-09-17
+## LCD validation on 2026-09-17, before autostart
 
 Clean Arm GNU 14.3.1 build and internal Flash programming (`Verified OK`) passed.
 Flash is 1010888 B (96.41%, 37688 B remaining); internal SRAM is 141920 B
