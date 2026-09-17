@@ -3,11 +3,31 @@
 
 #include "stm32746g_discovery_qspi.h"
 
-int ncnn_stm32f746_qspi_map(void) {
+static int read_register(QSPI_HandleTypeDef *handle, uint8_t instruction, uint8_t *value) {
+	QSPI_CommandTypeDef command = {0};
+	command.InstructionMode = QSPI_INSTRUCTION_1_LINE;
+	command.Instruction = instruction;
+	command.DataMode = QSPI_DATA_1_LINE;
+	command.NbData = 1;
+	command.DdrHoldHalfCycle = QSPI_DDR_HHC_ANALOG_DELAY;
+	return HAL_QSPI_Command(handle, &command, 100) == HAL_OK
+			&& HAL_QSPI_Receive(handle, value, 100) == HAL_OK ? 0 : -1;
+}
+
+int ncnn_stm32f746_qspi_map_lines(unsigned int data_lines) {
 	QSPI_HandleTypeDef handle = {0};
 	QSPI_CommandTypeDef command = {0};
 	QSPI_MemoryMappedTypeDef mapping = {0};
 	uint8_t id[3];
+	uint8_t sr1, sr2;
+
+	if (data_lines != 1 && data_lines != 4) {
+		return -1;
+	}
+	/* QSPI holds read-only data, never code or dirty cache lines. Invalidate
+	 * the whole mapped region so a preceding mode cannot mask a bad read.
+	 * Both modes pay the same cache-maintenance cost, inside the QSPI timer. */
+	SCB_InvalidateDCache_by_Addr((uint32_t *)0x90000000u, 0x01000000);
 
 	/* Reuse the board's pin/clock setup, but not its Micron-only flash
 	 * initialization: the tested board carries a Winbond W25Q128FV/JV. */
@@ -49,12 +69,40 @@ int ncnn_stm32f746_qspi_map(void) {
 		return -1;
 	}
 
-	/* Single-line memory-mapped read works without changing QE, dummy-cycle
-	 * registers or nonvolatile status bits. No erase/write commands here. */
-	command.Instruction = 0x03;
+	if (id[0] == 0xef) {
+		if (read_register(&handle, 0x05, &sr1) != 0
+				|| read_register(&handle, 0x35, &sr2) != 0 || (sr1 & 1)) {
+			return -1;
+		}
+		printf("ncnn_qspi: Winbond SR1=%02x SR2=%02x\n", sr1, sr2);
+		if (data_lines == 4 && !(sr2 & 2)) {
+			printf("ncnn_qspi: FAIL quad requires existing QE=1; status unchanged\n");
+			return -1;
+		}
+	} else if (data_lines == 4) {
+		printf("ncnn_qspi: FAIL quad supported only for Winbond ef4018\n");
+		return -1;
+	}
+
+	/* Winbond FV/JV datasheet 8.2.9: 6Bh uses a one-line instruction and
+	 * 24-bit address, eight dummy clocks, then four data lines. QE must
+	 * already be set. Never issue Write Enable or a status/program/erase
+	 * instruction; single-line mode remains available with QE=0. */
+	command.Instruction = data_lines == 4 ? 0x6b : 0x03;
+	command.DataMode = data_lines == 4 ? QSPI_DATA_4_LINES : QSPI_DATA_1_LINE;
+	command.DummyCycles = data_lines == 4 ? 8 : 0;
 	command.AddressMode = QSPI_ADDRESS_1_LINE;
 	command.AddressSize = QSPI_ADDRESS_24_BITS;
 	command.NbData = 0;
 	mapping.TimeOutActivation = QSPI_TIMEOUT_COUNTER_DISABLE;
-	return HAL_QSPI_MemoryMapped(&handle, &command, &mapping) == HAL_OK ? 0 : -1;
+	if (HAL_QSPI_MemoryMapped(&handle, &command, &mapping) != HAL_OK) {
+		return -1;
+	}
+	printf("ncnn_qspi: data_lines=%u opcode=0x%02lx dummy=%lu clock_hz=27000000\n",
+			data_lines, (unsigned long)command.Instruction, (unsigned long)command.DummyCycles);
+	return 0;
+}
+
+int ncnn_stm32f746_qspi_map(void) {
+	return ncnn_stm32f746_qspi_map_lines(1);
 }
