@@ -6,6 +6,7 @@
 * @date 3 Apr 2015
 */
 
+#include <assert.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -13,6 +14,7 @@
 #include <fs/inode.h>
 #include <fs/dentry.h>
 #include <kernel/task/resource/vfs.h>
+#include <util/atomic_rmw.h>
 #include <util/log.h>
 
 /**
@@ -28,6 +30,7 @@ int chdir(const char *path) {
 	int err;
 	char new_pwd[PATH_MAX - 1];
 	struct task_vfs *t;
+	struct dentry *old;
 
 	if (path == NULL) {
 		SET_ERRNO(ENOENT);
@@ -47,29 +50,29 @@ int chdir(const char *path) {
 		return SET_ERRNO(ENOTDIR);
 	}
 
-	dentry_full_path(l.item, new_pwd);
-
-	dentry_ref_dec(l.item);
-
-	if (-1 == setenv("PWD", new_pwd, 1)) {
-		SET_ERRNO(ENAMETOOLONG);
-		return -1;
+	if (dentry_full_path_n(l.item, new_pwd, sizeof(new_pwd))) {
+		dentry_ref_dec(l.item);
+		return SET_ERRNO(ENAMETOOLONG);
 	}
 
 	if ((t = task_self_resource_vfs()) == NULL) {
+		dentry_ref_dec(l.item);
 		log_error("task VFS structure is NULL");
 		return SET_ERRNO(EIO);
 	}
 
-	if (t->pwd != l.item) {
-		dentry_ref_dec(t->pwd);
-		t->pwd = l.item;
-		dentry_ref_inc(t->pwd);
+	/* $PWD is for the shell; the working directory is t->pwd, which getcwd()
+	 * reads. A name the environment cannot hold (64-byte strings) drops $PWD
+	 * rather than leave it naming the previous directory. */
+	if (-1 == setenv("PWD", new_pwd, 1)) {
+		unsetenv("PWD");
 	}
 
-	if (-1 == setenv("PWD", new_pwd, 1)) {
-		assert(errno == ENOMEM);
-		return SET_ERRNO(ENAMETOOLONG);
+	/* The lookup's reference becomes the working directory's, so there is
+	 * no moment at which reclaim could take the directory. */
+	old = atomic_rmw_exchange(&t->pwd, l.item, __ATOMIC_ACQ_REL);
+	if (old) {
+		dentry_ref_dec(old);
 	}
 
 	return 0;

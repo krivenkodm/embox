@@ -41,10 +41,7 @@ static int setup_suite(void) {
 		return -ENOMEM;
 	}
 
-	/* `test_node` has not existed for a long time -- every one of
-	 * these six named it, so this suite has not compiled since whatever
-	 * rename took it away. The names are the ones the tree below is built
-	 * from, in the order it builds them. */
+	/* The names the tree below is built from, in build order. */
 	inode_name_set(test_root, "R");
 	inode_name_set(a, "A");
 	inode_name_set(b, "B");
@@ -77,11 +74,7 @@ static int teardown_suite(void) {
 	return 0;
 }
 
-/* This used to ignore `node` and call vfs_lookup(), which resolves against
- * the RUNNING SYSTEM'S root -- so every case here compared a node of the
- * detached tree the suite builds against something out of the real filesystem,
- * and the first assertion failed. vfs_subtree_lookup() is the one that answers
- * the question this suite is asking: resolve a path relative to a given node. */
+/* Resolve relative to NODE, not to the running system's root. */
 static struct inode *vfs_lookup_nr(struct inode *node, const char *str_path) {
 	return vfs_subtree_lookup(node, str_path);
 }

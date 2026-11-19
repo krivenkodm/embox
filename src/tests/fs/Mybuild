@@ -69,25 +69,13 @@ module mount_table {
 module fat_ops {
 	source "fat_ops.c"
 
-	/* Needs two pools raised, because the root-capacity case creates 96 files
-	 * at once:
-	 *
-	 *   embox.fs.driver.fat(inode_quantity=128)  -- the stock 16 is a
-	 *       directory of eight, and the case stops at file 16 with ENOMEM;
-	 *   embox.fs.node(fnode_quantity=1024)       -- the stock 64 covers the
-	 *       rest of the tree as well, and the case then stops at file 41.
-	 *
-	 * A template that names neither gets both defaults: templates/x86/smp
-	 * does not name the FAT driver at all, so it arrives through this
-	 * module's own depends with the stock 16.  Nothing here can force
-	 * another module's option, so the requirement is stated rather than
-	 * enforced -- and the suite says which file it stopped at and why, which
-	 * is how both numbers were found rather than guessed. */
+	/* The root-capacity case creates 96 files at once: the template must raise
+	 * embox.fs.driver.fat(inode_quantity=128) and
+	 * embox.fs.node(fnode_quantity=1024). A Mybuild cannot set another
+	 * module's option. */
 
-	/* The suite mounts a ramdisk, and the root it runs against is read-only
-	 * initfs -- mkdir() there fails. So the mount point comes from the same
-	 * place the suite does: a file whose only job is to make the directory
-	 * exist, the way http_admin's pages make theirs. */
+	/* The root is read-only initfs, so the mount point directory comes from
+	 * @InitFS. */
 	@InitFS(target_dir="tmp_fat")
 	source "fat_ops_mountpoint.txt"
 
@@ -102,8 +90,7 @@ module fat_ops {
 module mount_smp {
 	source "mount_smp.c"
 
-	/* Same reason as fat_ops next door: the root is read-only initfs, so the
-	 * mount point has to come from the initfs itself. */
+	/* The root is read-only initfs, so the mount point comes from @InitFS. */
 	@InitFS(target_dir="tmp_mnt")
 	source "mount_smp_mountpoint.txt"
 

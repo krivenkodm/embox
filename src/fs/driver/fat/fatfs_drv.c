@@ -57,9 +57,10 @@ int fat_format(struct block_dev *dev, void *priv) {
 		fat_n = DEFAULT_FAT_VERSION;
 	}
 
-	if (fat_n != 12 && fat_n != 16 && fat_n != 32) {
+	/* 0: let the cluster count decide. */
+	if (fat_n != 0 && fat_n != 12 && fat_n != 16 && fat_n != 32) {
 		log_error("Unsupported FAT version: FAT%d "
-				"(FAT12/FAT16/FAT32 available)", fat_n);
+				"(FAT12/FAT16/FAT32 available, or 0 for what fits)", fat_n);
 		return -EINVAL;
 	}
 
@@ -95,10 +96,6 @@ static int fat_fill_sb_unlocked(struct super_block *sb, const char *source) {
 	}
 
 	fsi = fat_fs_alloc();
-	/* The pool runs out, and it runs out for a reason that has nothing to do
-	 * with this call -- forty mounts that failed after allocating and never
-	 * gave anything back will do it. The store below was unconditional: a data
-	 * abort at FAR_EL1 = 0, three tests after the mounts that caused it. */
 	if (fsi == NULL) {
 		return -ENOMEM;
 	}
@@ -110,6 +107,7 @@ static int fat_fill_sb_unlocked(struct super_block *sb, const char *source) {
 		.free_hint = 2,
 	};
 	sb->sb_data = fsi;
+	fsi->fatc_ok = 1;
 	sb->sb_iops = &fat_iops;
 	sb->sb_fops = &fat_fops;
 	sb->sb_ops  = &fat_sbops;
@@ -144,6 +142,7 @@ static int fat_fill_sb_unlocked(struct super_block *sb, const char *source) {
 
 	inode_priv_set(sb->sb_root, di);
 	sb->sb_root->i_ops = &fat_iops;
+	sb->sb_root->i_no = 1; /* see fat_ino_of() */
 
 	return 0;
 
@@ -173,22 +172,21 @@ static int fat_clean_sb_unlocked(struct super_block *sb) {
 
 	assert(fsi);
 
+	/* The held FAT sector belongs to this volume; fat_unlock() would
+	 * otherwise write it through a freed pointer. */
+	fat_fatc_drop();
 	fat_fs_free(fsi);
 
-	/* Through destroy_inode rather than by hand, because it clears
-	 * the inode's private pointer. super_block_free() calls inode_free() on
-	 * this same root immediately afterwards, and inode_free now releases
-	 * private data too -- freeing it here without clearing the pointer would
-	 * put one dirinfo on the pool free list twice. */
+	/* Through fat_destroy_inode(), which clears the private pointer, since
+	 * super_block_free() calls inode_free() on this root right after. */
 	fat_destroy_inode(sb->sb_root);
 
 	return 0;
 }
 
 
-/* Mount and unmount walk the directory tree through the same global scratch
- * buffer as everything else, and they can run while a second thread is
- * writing a file on another volume. */
+/* Mount and unmount use the global scratch buffer too, and may run
+ * concurrently with I/O on another volume. */
 int fat_fill_sb(struct super_block *sb, const char *source) {
 	int res;
 

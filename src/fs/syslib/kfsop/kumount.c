@@ -28,9 +28,8 @@ static int umount_walker(struct inode *node) {
 		}
 	}
 
-	/* Give the filesystem its data back now, while the superblock is still
-	 * here. An inode somebody is standing on survives this walk, and by
-	 * the time the last holder lets go the superblock will be gone. */
+	/* Return the filesystem data while the superblock exists: a held inode
+	 * survives this walk and outlives the superblock. */
 	inode_detach_fs(node);
 
 	vfs_del_leaf(node);
@@ -52,10 +51,7 @@ int kumount(const char *dir) {
 		return -1;
 	}
 
-	/* Refuse a path that is not a mount point. Without this, umount on an
-	 * ordinary directory walks off the end of the function and unmounts
-	 * whatever volume that directory happens to live in. Two shapes count
-	 * as a mount point: an inode somebody mounted onto (`mounted'), and
+	/* Refuse a path that is not a mount point: an inode mounted onto, or
 	 * the root of a mounted volume. */
 	if (!dir_node.node->mounted
 	    && !(dir_node.mnt_desc
@@ -77,13 +73,8 @@ int kumount(const char *dir) {
 		return res;
 	}
 
-	/* Nothing below this line is undoable. umount_walker() deletes every
-	 * inode on the volume and super_block_free() takes the rest. A
-	 * descriptor that survives it points first at freed objects and then,
-	 * on the next mount, at another file's. Refuse instead. */
-	/* Counting and tearing down are two operations; on more than one core
-	 * another thread opens a file between them. So the count and the seal
-	 * are taken together, and from here no new descriptor can be opened. */
+	/* Nothing below is undoable, so refuse while descriptors are open. The
+	 * count and the seal are one step: no descriptor opens after it. */
 	res = file_desc_seal_sb(dir_node.node->i_sb);
 	if (res > 0) {
 		errno = EBUSY;
@@ -101,10 +92,8 @@ int kumount(const char *dir) {
 		return res;
 	}
 
-	/* super_block_free() destroys sb->sb_root, and after
-	 * if_mounted_follow_down() dir_node.node is that same inode. Freeing it
-	 * again would put one inode on the pool free list twice. Free it only
-	 * when it is not the mount root. */
+	/* super_block_free() frees sb_root, which dir_node.node is after
+	 * if_mounted_follow_down(); do not release it again. */
 	{
 		struct super_block *umount_sb = umount_sb_before;
 		struct inode *umount_root = umount_sb ? umount_sb->sb_root : NULL;

@@ -78,18 +78,14 @@ ssize_t kread(struct file_desc *desc, void *buf, size_t size) {
 		goto end;
 	}
 
-	/* Is this still the file that was opened? A descriptor that outlived its
-	 * volume points at a pool slot somebody else owns now. */
+	/* A descriptor that outlived its volume points at a reused pool slot. */
 	if (!file_desc_valid(desc)) {
 		ret = -EBADF;
 		goto end;
 	}
 
-	/* Don't try to read past EOF.
-	 * Read i_size and pos ONCE. They are shared: another core writing to
-	 * the same file changes i_size between two reads. Then the clamp
-	 * RAISES the size instead of lowering it. The subtraction is guarded
-	 * too: pos can legitimately be past i_size after a truncation. */
+	/* Don't read past EOF. Read i_size and pos once: another core may change
+	 * i_size between reads. pos may be past i_size after a truncation. */
 	{
 		size_t i_size = desc->f_inode->i_size;
 		size_t pos = (size_t)file_get_pos(desc);

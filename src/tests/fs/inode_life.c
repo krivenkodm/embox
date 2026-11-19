@@ -1,15 +1,6 @@
 /**
  * @file
- * @brief How long an inode has to outlive the name that led to it.
- *
- * Finding a path and using what it led to are two operations, and between
- * them another core can unlink the inode. The tree's locks make the walk
- * safe; they do not make the pointer the walk returned stay alive. This suite
- * is about that pointer.
- *
- * The cases run from the plainest shape upwards, because the plainest one is
- * the one every system is expected to get right: a file unlinked while it is
- * open stays readable through the descriptor until the last one is closed.
+ * @brief An inode outlives the name that led to it while it is referenced.
  */
 
 #include <errno.h>
@@ -37,8 +28,7 @@ TEST_TEARDOWN_SUITE(teardown_suite);
 
 #define FS_NAME    "vfat"
 #define FS_DEV     "/dev/ramdisk_inode"
-/* Bytes, not pages: a page count times PAGE_SIZE() means a different
- * volume on every board. */
+/* In bytes, so the volume is the same on every board. */
 #define FS_BYTES   (2 * 1024 * 1024)
 #define FS_DIR     "/tmp_inode"
 #define FILE_ONE   FS_DIR "/one.bin"
@@ -102,7 +92,7 @@ static int teardown_suite(void) {
 }
 
 /* ------------------------------------------------------------------ *
- * One core, no threads: the plain shape of the defect.
+ * One core, no threads.
  */
 TEST_CASE("unlink with the file open postpones the free, close performs it") {
 	unsigned long deferred_before;
@@ -116,19 +106,16 @@ TEST_CASE("unlink with the file open postpones the free, close performs it") {
 	fd = open(FILE_ONE, O_RDONLY);
 	test_assert(fd >= 0);
 
-	/* The name goes while the descriptor is still on the inode. Without the
-	 * reference this frees the inode outright and the descriptor is left
-	 * pointing at a pool slot the next open will hand to somebody else. */
+	/* The descriptor's reference keeps the inode; without it the descriptor
+	 * would point at a pool slot the next open reuses. */
 	test_assert_zero(remove(FILE_ONE));
 	test_assert_not_zero(0 == access(FILE_ONE, F_OK));
 
 	/* The free was postponed, exactly once. */
 	test_assert_equal(counter_read(&inode_free_deferred) - deferred_before, 1);
 
-	/* And closing performs it -- which is the half a leak would hide. Twenty
-	 * rounds is more than the driver has inodes (fat's inode_quantity is 16),
-	 * so a reference that is never released runs the pool dry and the open
-	 * below fails. */
+	/* Closing performs the free: twenty rounds exceed fat's 16 inodes, so a
+	 * leaked reference makes the open below fail. */
 	test_assert_zero(close(fd));
 
 	for (i = 0; i < 20; i++) {
@@ -155,34 +142,23 @@ TEST_CASE("opening a file unlinked out from under the lookup is refused") {
 	test_assert(fd >= 0);
 	test_assert_zero(remove(FILE_ONE));
 
-	/* The inode is alive -- this descriptor holds it -- but it has no name
-	 * and is on its way out. A second open must not find it, and if some
-	 * path did hand it to file_desc_create() anyway, the reference would be
-	 * refused rather than taken. */
+	/* Alive but unnamed and dying: a second open must not find it, and
+	 * file_desc_create() would refuse the reference. */
 	test_assert_not_zero(0 == access(FILE_ONE, F_OK));
 
 	test_assert_zero(close(fd));
 
-	/* Reported rather than asserted: whether anything actually reached the
-	 * refusal depends on how the lookup answers a name that is gone, and both
-	 * answers are correct. */
+	/* Reported, not asserted: whether the refusal is reached depends on the
+	 * lookup, and both answers are correct. */
 	printk("inode_life: %lu reference(s) refused on a dying inode\n",
 	    counter_read(&inode_ref_refused) - refused_before);
 }
 
 /* ------------------------------------------------------------------ *
  * Two cores: one opens a name in a loop while the other unlinks and
- * recreates it.
- *
- * This is the case that found kread() clamping a read to a length
- * it read twice, so that a write on the other core between the two reads
- * turned a one-byte request into a 256-byte one. It answers 256 and writes
- * 256, over the caller's frame and its return address, and the crash lands
- * somewhere with no connection to the read at all.
- *
- * The line below is what says so out loud if it ever comes back. It is a
- * report rather than an assertion because by the time anything could assert,
- * the frame that would do the asserting is already gone.
+ * recreates it. kread() must clamp against one reading of the file size, or
+ * a read overruns the caller's buffer. Reported rather than asserted: an
+ * overrun destroys the frame that would assert.
  */
 static volatile int racer_run;
 static unsigned long racer_opens, racer_misses;
@@ -238,94 +214,72 @@ TEST_CASE("open and unlink of the same name from two cores") {
 
 
 /* ------------------------------------------------------------------ *
- * A descriptor whose file was removed is REFUSED, not answered.
+ * A file removed while open lives until its last descriptor closes.
  *
- * POSIX says the file survives until the last descriptor closes. It does not
- * here, and the reason is not the inode -- the reference above keeps that
- * alive -- but the FAT driver, which frees the cluster chain inside
- * ino_remove() before the inode is touched at all. The bytes are gone whatever
- * the inode does.
- *
- * So the question is only what the descriptor answers, and there are two
- * possibilities: nothing (a short read, silently), or an error. It used to be
- * the first. It is now the second, because the alternative is worse than it
- * looks: the driver's private data is handed back at the same moment, its pool
- * slot goes to the next file, and a descriptor that keeps answering is a
- * descriptor that will eventually answer with somebody else's data. That is
- * what wrote one file's bytes into an unrelated file on a board.
- *
- * Making the POSIX promise true needs the driver to hold an unlinked file's
- * chain until the last close, which is a filesystem change and not a
- * reference count. Until then, an error is the honest answer.
+ * The driver takes only the name at the unlink and gives the clusters back on
+ * the last reference (fat_destroy_inode), so the descriptor is answered from
+ * its own file.
  */
-TEST_CASE("a descriptor whose file was removed is refused, not answered") {
+static int fd_check(int fd, unsigned seed) {
+	pattern_fill(pattern, sizeof(pattern), seed);
+	memset(readback, 0, sizeof(readback));
+	if (lseek(fd, 0, SEEK_SET) != 0) {
+		return -1;
+	}
+	if (sizeof(readback) != read(fd, readback, sizeof(readback))) {
+		return -1;
+	}
+	return memcmp(readback, pattern, sizeof(pattern)) ? -1 : 0;
+}
+
+TEST_CASE("a file removed while open is read and written until it is closed") {
 	unsigned long dead_before;
 	int fd;
 
 	test_assert_zero(file_make(FILE_ONE, 3));
 
-	fd = open(FILE_ONE, O_RDONLY);
+	fd = open(FILE_ONE, O_RDWR);
 	test_assert(fd >= 0);
 
 	dead_before = counter_read(&fdesc_dead_inode);
 
 	test_assert_zero(remove(FILE_ONE));
 
-	/* Not a short read: an error. */
-	memset(readback, 0, sizeof(readback));
-	test_assert(read(fd, readback, sizeof(readback)) < 0);
+	/* The name is gone... */
+	test_assert(0 > open(FILE_ONE, O_RDONLY));
 
-	/* And the kernel counted it as what it was, so a run can say how often
-	 * this happened rather than only that it did. */
-	test_assert_equal(counter_read(&fdesc_dead_inode) - dead_before, 1);
+	/* ...and the file is not: its bytes, all of them. */
+	test_assert_zero(fd_check(fd, 3));
 
-	/* A write through it is refused too, and that is the half that used to
-	 * corrupt another file. */
-	test_assert(write(fd, readback, 1) < 0);
+	/* It takes a write, and reads it back. */
+	pattern_fill(pattern, sizeof(pattern), 30);
+	test_assert(lseek(fd, 0, SEEK_SET) == 0);
+	test_assert_equal(sizeof(pattern), write(fd, pattern, sizeof(pattern)));
+	test_assert_zero(fd_check(fd, 30));
 
-	/* The descriptor is still a descriptor, and closing it does not take the
-	 * system with it. */
+	test_assert_equal(counter_read(&fdesc_dead_inode), dead_before);
 	test_assert_zero(close(fd));
 
-	/* Nothing in this suite should ever have used a descriptor whose inode
-	 * changed hands. If this is not zero, the defect is alive. */
+	/* No descriptor here may have used an inode that changed hands. */
 	test_assert_zero(counter_read(&fdesc_stale_gen));
 }
 
 /* ------------------------------------------------------------------ *
- * The slot changes hands under an open descriptor.
+ * The name's slot changes hands under an open descriptor.
  *
- * The slot-reuse defect in miniature: remove the file a descriptor is open
- * on, make another file so the pools hand the slot out again, and then use
- * the old descriptor. On a board this wrote one writer's text into an
- * unrelated file -- the writes were legal writes to legal clusters of the wrong
- * file, which is why fsck saw nothing and the suite's own byte checks did.
- *
- * Two things stop it now, and the case says which one did:
- *
- *   the reference   the descriptor holds the inode, so the slot cannot be
- *                   handed out at all while it is open. The removal is
- *                   deferred and the descriptor is refused as dying.
- *   the generation  if the reference were ever missed, the inode would be
- *                   reused and its generation would differ from the one the
- *                   descriptor recorded. That is the guard a NULL check
- *                   cannot be.
- *
- * Either way the descriptor is refused. The counters say which, and that is
- * the point: a build that lost the reference would still be caught, and would
- * say so instead of corrupting the other file.
+ * An unlinked file's directory entry is free at once, and the next file made
+ * in that directory can take it. A write through the old descriptor must not
+ * touch the new file's entry, and must still answer with its own bytes.
  */
-TEST_CASE("the slot changes hands under an open descriptor") {
-	unsigned long dead_before, stale_before;
+TEST_CASE("the name's slot changes hands under an open descriptor") {
+	unsigned long stale_before;
 	int fd;
-	char c;
 
 	test_assert_zero(file_make(FILE_ONE, 4));
 
-	fd = open(FILE_ONE, O_RDONLY);
+	fd = open(FILE_ONE, O_RDWR);
 	test_assert(fd >= 0);
 
-	dead_before = counter_read(&fdesc_dead_inode);
 	stale_before = counter_read(&fdesc_stale_gen);
 
 	test_assert_zero(remove(FILE_ONE));
@@ -333,18 +287,22 @@ TEST_CASE("the slot changes hands under an open descriptor") {
 	/* Somebody else's file, made in the same place the removed one was. */
 	test_assert_zero(file_make(FILE_TWO, 5));
 
-	/* The old descriptor must not answer with any of it. */
-	test_assert(read(fd, &c, 1) < 0);
-	test_assert(write(fd, &c, 1) < 0);
-
-	printk("inode_life: the stale descriptor was refused as %s\n",
-	    counter_read(&fdesc_stale_gen) != stale_before ? "another file's"
-	                                                   : "a removed file's");
-
-	/* One of the two caught it, and nothing was answered. */
-	test_assert_not_zero((counter_read(&fdesc_dead_inode) != dead_before)
-	                     || (counter_read(&fdesc_stale_gen) != stale_before));
-
+	/* The old descriptor answers with its own file, and writes to it. */
+	test_assert_zero(fd_check(fd, 4));
+	pattern_fill(pattern, sizeof(pattern), 40);
+	test_assert(lseek(fd, 0, SEEK_SET) == 0);
+	test_assert_equal(sizeof(pattern), write(fd, pattern, sizeof(pattern)));
 	test_assert_zero(close(fd));
+
+	/* The new file is untouched, through a remount, which is the only way
+	 * to tell the directory entry on the media from the cached inode. */
+	test_assert_zero(umount(FS_DIR));
+	test_assert_zero(mount(FS_DEV, FS_DIR, FS_NAME, 0, NULL));
+	fd = open(FILE_TWO, O_RDONLY);
+	test_assert(fd >= 0);
+	test_assert_zero(fd_check(fd, 5));
+	test_assert_zero(close(fd));
+
+	test_assert_equal(counter_read(&fdesc_stale_gen), stale_before);
 	test_assert_zero(remove(FILE_TWO));
 }

@@ -29,39 +29,37 @@ extern const struct idesc_xattrops file_idesc_xattrops;
 
 OBJALLOC_DEF(desc_pool, struct file_desc, OPTION_GET(NUMBER,fdesc_quantity));
 
-/* Which descriptors are alive, so that kumount() can refuse to
- * free a volume out from under one. The pool above is an OBJALLOC_DEF and
- * cannot be walked, so the table is kept here instead of asking it.
+/* Live descriptors, so that kumount() can refuse to free a volume under
+ * one; the OBJALLOC_DEF pool cannot be walked. Sized as the pool.
  *
- * A plain array of the pool's own size: the cost is one pointer per possible
- * descriptor and a linear scan at unmount, which happens rarely and matters
- * more than it costs.
- *
- * And it needs a lock, because it is a table two
- * cores reach. Two allocations scanning it at once can settle on the same
- * slot, and then one of the descriptors is not in the table at all -- so
- * kumount() sees a volume with nothing open on it and frees it under a file
- * that is open, which is the exact corruption this table exists to prevent.
- * A concurrent free can also clear a slot a scan has just read, and
- * file_desc_open_on_sb() then dereferences a descriptor that is already back
- * in the pool.
- *
- * Interrupts are masked rather than preemption disabled: every section is a
- * bounded walk over an array, nothing in them blocks, and masking makes them
- * non-preemptible for free. Same shape and the same reasoning as the
- * descriptor table's lock in kernel/task/idesc/idesc_table.c.
- *
- * objalloc() and objfree() stay OUTSIDE it. They take the pool's own lock,
- * and holding one lock at a time is what keeps "no nesting here" a fact
- * rather than something to check again later. */
+ * fdesc_live_lock guards it, with interrupts masked; nothing blocks inside.
+ * objalloc() and objfree() take the pool's own lock and stay outside it, so
+ * the two never nest. Without SMP masked interrupts alone guard it. */
 #define FDESC_LIVE_MAX OPTION_GET(NUMBER, fdesc_quantity)
 static struct file_desc *fdesc_live[FDESC_LIVE_MAX];
+#if defined(SMP)
 static spinlock_t fdesc_live_lock = SPIN_STATIC_UNLOCKED;
+#endif
 
-/* Descriptors allocated with no room left to record them. The table is the
- * pool's own size, so this cannot happen while the two agree: a non-zero
- * value means a slot leaked and kumount()'s answer stopped being trustworthy
- * some time earlier. */
+static ipl_t fdesc_live_enter(void) {
+	ipl_t ipl = ipl_save();
+
+#if defined(SMP)
+	__spin_lock(&fdesc_live_lock);
+#endif
+
+	return ipl;
+}
+
+static void fdesc_live_leave(ipl_t ipl) {
+#if defined(SMP)
+	__spin_unlock(&fdesc_live_lock);
+#endif
+	ipl_restore(ipl);
+}
+
+/* Descriptors allocated with no slot left to record them. Non-zero means a
+ * slot leaked and kumount()'s check is no longer reliable. */
 unsigned long fdesc_live_lost;
 
 static struct file_desc *file_desc_alloc(struct inode *node) {
@@ -72,31 +70,11 @@ static struct file_desc *file_desc_alloc(struct inode *node) {
 	int sealed = 0;
 
 	if (desc) {
-		ipl = ipl_save();
-		__spin_lock(&fdesc_live_lock);
-		/* The same lock that answers "how many are open" decides whether one
-		 * more may be. Otherwise the answer is true only for the instant it is
-		 * given, and kumount() acts on it for the whole teardown.
-		 *
-		 * Read i_sb ONCE. This was
-		 *
-		 *     sealed = node && node->i_sb && node->i_sb->sb_unmounting;
-		 *
-		 * which loads the pointer twice -- once to test it and once to reach
-		 * the field. inode_detach_fs() clears i_sb from the umount path on
-		 * another core, so the check could pass and the dereference then run
-		 * on NULL. Measured: three rounds of a 170-round acceptance hour died
-		 * with `Data abort ... FAR_EL1 = 0x40', always in the mount_smp round
-		 * and always at this line, and 0x40 is exactly
-		 * offsetof(struct super_block, sb_unmounting) -- so the base really
-		 * was NULL while the test on the same line had just passed.
-		 *
-		 * One load closes it. A pointer that was valid when loaded is safe to
-		 * follow here: interrupts are off and this core holds the lock, so
-		 * nothing preempts between the load and the field, and a volume that
-		 * is being taken apart has had sb_unmounting set BEFORE the walk that
-		 * detaches its inodes -- so a stale-but-live pointer reads 1 and
-		 * refuses, which is the right answer. */
+		ipl = fdesc_live_enter();
+		/* Checked under the same lock as the count, so kumount()'s answer
+		 * holds through the teardown. i_sb is loaded once: umount on another
+		 * core clears it. A stale but live sb is safe, as sb_unmounting is set
+		 * before the inodes are detached. */
 		sb = node ? node->i_sb : NULL;
 		sealed = sb && sb->sb_unmounting;
 		if (!sealed) {
@@ -107,8 +85,7 @@ static struct file_desc *file_desc_alloc(struct inode *node) {
 				}
 			}
 		}
-		__spin_unlock(&fdesc_live_lock);
-		ipl_restore(ipl);
+		fdesc_live_leave(ipl);
 
 		if (sealed) {
 			objfree(&desc_pool, desc);
@@ -125,16 +102,14 @@ static void file_desc_free(struct file_desc *desc) {
 	ipl_t ipl;
 	int i;
 
-	ipl = ipl_save();
-	__spin_lock(&fdesc_live_lock);
+	ipl = fdesc_live_enter();
 	for (i = 0; i < FDESC_LIVE_MAX; i++) {
 		if (fdesc_live[i] == desc) {
 			fdesc_live[i] = NULL;
 			break;
 		}
 	}
-	__spin_unlock(&fdesc_live_lock);
-	ipl_restore(ipl);
+	fdesc_live_leave(ipl);
 
 	objfree(&desc_pool, desc);
 }
@@ -161,11 +136,9 @@ int file_desc_open_on_sb(const struct super_block *sb) {
 	if (sb == NULL) {
 		return 0;
 	}
-	ipl = ipl_save();
-	__spin_lock(&fdesc_live_lock);
+	ipl = fdesc_live_enter();
 	n = fdesc_count_on_sb(sb);
-	__spin_unlock(&fdesc_live_lock);
-	ipl_restore(ipl);
+	fdesc_live_leave(ipl);
 
 	return n;
 }
@@ -177,21 +150,18 @@ int file_desc_seal_sb(struct super_block *sb) {
 	if (sb == NULL) {
 		return 0;
 	}
-	ipl = ipl_save();
-	__spin_lock(&fdesc_live_lock);
+	ipl = fdesc_live_enter();
 	n = fdesc_count_on_sb(sb);
 	if (n == 0) {
 		sb->sb_unmounting = 1;
 	}
-	__spin_unlock(&fdesc_live_lock);
-	ipl_restore(ipl);
+	fdesc_live_leave(ipl);
 
 	return n;
 }
 
-/* Both must stay zero; each counts a use of a descriptor that no longer
- * names what it was opened on, which would otherwise be found by its
- * consequences -- in another file. */
+/* Both must stay zero: uses of a descriptor that no longer names the file
+ * it was opened on. */
 unsigned long fdesc_stale_gen;
 unsigned long fdesc_dead_inode;
 
@@ -205,19 +175,14 @@ int file_desc_valid(struct file_desc *desc) {
 		return 0;
 	}
 
-	/* The pool slot changed hands. The pointer is valid and it is somebody
-	 * else's file -- which is exactly what a NULL guard cannot see, and what
-	 * wrote one file's bytes into another. */
+	/* The pool slot changed hands: a valid pointer to another file. */
 	if (node->i_gen != desc->f_gen) {
 		atomic_rmw_add_fetch(&fdesc_stale_gen, 1, __ATOMIC_RELAXED);
 		return 0;
 	}
 
-	/* The inode left the name tree -- the volume was unmounted, or the
-	 * file was removed. The inode itself is still here, because this
-	 * descriptor holds a reference to it, but the filesystem has already been
-	 * given its data back. Answer the descriptor rather than let it reach
-	 * whatever took the driver's private slot. */
+	/* The inode left the tree (unmount or unlink); its filesystem data is
+	 * already released. */
 	if (node->i_dying) {
 		atomic_rmw_add_fetch(&fdesc_dead_inode, 1, __ATOMIC_RELAXED);
 		return 0;
@@ -252,11 +217,8 @@ struct file_desc *file_desc_create(struct inode *node, int flag) {
 		return err2ptr(EACCES);
 	}
 
-	/* A descriptor outlives the lookup that found its inode, and unlink()
-	 * frees the inode the moment its last name goes. Say so, so that the free
-	 * waits for this descriptor instead. A refusal here means the file was
-	 * unlinked between the lookup and now -- the answer to that is ENOENT, not
-	 * a descriptor onto a corpse. */
+	/* Hold the inode so that unlink() defers its free until close. Failure
+	 * means it was unlinked after the lookup. */
 	if (!inode_ref(node)) {
 		file_desc_free(desc);
 		return err2ptr(ENOENT);
@@ -279,13 +241,11 @@ int file_desc_destroy(struct file_desc *fdesc) {
 
 	node = fdesc->f_inode;
 
-	/* One name fewer; this is what takes the inode out of the tree when the
-	 * last one goes. */
+	/* Drops a name; the last one takes the inode out of the tree. */
 	inode_del(node);
 
-	/* And one user fewer. After inode_del(), because if
-	 * that was the last name the inode is now dying and this is the reference
-	 * whose release frees it. */
+	/* After inode_del(): if that was the last name, releasing this
+	 * reference frees the inode. */
 	inode_unref(node);
 
 	file_desc_free(fdesc);

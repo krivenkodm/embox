@@ -54,19 +54,14 @@ struct inode {
 
 	unsigned int i_nlink;
 
-	/* i_nlink counts names; i_ref counts users of the pointer.
-	 * Between finding a path and using it, another core can unlink the
-	 * inode. i_ref protects against this; i_dying marks an inode that
-	 * left the name tree but still has users. Both are accessed under
-	 * vfs.c's tree lock. */
+	/* i_nlink counts names, i_ref users of the pointer. i_dying marks an
+	 * inode out of the name tree that still has users. Both under vfs.c's
+	 * tree lock. */
 	int i_ref;
 	int i_dying;
 
-	/* Generation number for this pool slot allocation.
-	 * A descriptor holds a pointer, and a freed-and-reused pointer is
-	 * still valid -- to somebody else's file. The generation catches this:
-	 * whoever holds this inode records the number it saw, and a mismatch
-	 * means the slot changed hands. */
+	/* Generation of this pool slot allocation; holders record it, and a
+	 * mismatch means the slot was reused. */
 	unsigned int i_gen;
 
 	struct slist_link dirent_link;
@@ -98,24 +93,22 @@ extern struct inode *inode_alloc(struct super_block *sb);
 extern int inode_ref(struct inode *node);
 extern void inode_unref(struct inode *node);
 
-/* "The tree is done with this inode." Frees it if nobody holds it, marks it
- * dying if somebody does -- the last inode_unref() frees it then. This is
- * the ONLY way an inode that was ever reachable may be given up. */
+/* Called when the tree is done with an inode: frees it if unheld, else marks
+ * it dying for the last inode_unref() to free. The only way to give up an
+ * inode that was ever reachable. */
 extern void inode_release(struct inode *node);
 
 /* Hands the filesystem back whatever it hung off this inode, now. Needed
  * before the superblock goes, because a deferred inode outlives the unlink. */
 extern void inode_detach_fs(struct inode *node);
 
-/* Frees postponed because somebody still held the inode, and references
- * refused because it was already dying. Both are evidence that the window
- * this counting exists to close is a real one. */
+/* Frees deferred because the inode was held, and references refused
+ * because it was dying. */
 extern unsigned long inode_free_deferred;
 extern unsigned long inode_ref_refused;
 
-/* Uses of a descriptor whose inode is not the one it opened, and uses of one
- * whose inode has left the tree. Both must be zero; a non-zero value names a
- * silent corruption that would otherwise be found by its consequences. */
+/* Uses of a descriptor whose inode was reused, or has left the tree.
+ * Both must stay zero. */
 extern unsigned long fdesc_stale_gen;
 extern unsigned long fdesc_dead_inode;
 

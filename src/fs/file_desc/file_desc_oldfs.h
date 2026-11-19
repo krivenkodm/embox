@@ -39,9 +39,7 @@ struct file_desc {
 	struct idesc f_idesc;
 
 	struct inode *f_inode;
-	/* The generation f_inode carried when this descriptor was opened. If they
-	 * ever differ, the slot changed hands and this descriptor is pointing at
-	 * another file. */
+	/* f_inode's i_gen at open; a mismatch means the slot changed hands. */
 	unsigned int f_gen;
 	const struct file_operations *f_ops;
 	off_t f_pos;
@@ -51,9 +49,8 @@ struct file_desc {
 	void *file_info; /* customize in each file system */
 };
 
-/* Is this descriptor still about the file it was opened on? Answers 0 for a
- * slot that changed hands and for an inode that has left the name tree -- an
- * unmounted volume, or a file somebody removed. */
+/* Returns 0 if the inode slot changed hands or the inode left the name
+ * tree (unmounted or removed). */
 extern int file_desc_valid(struct file_desc *desc);
 
 extern struct file_desc *file_desc_from_idesc(struct idesc *idesc);

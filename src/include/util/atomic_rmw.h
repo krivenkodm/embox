@@ -1,16 +1,6 @@
 /**
  * @file
- * @brief RMW atomics with fallback for targets lacking lock-free support.
- *
- * __atomic_* RMW operations become libatomic calls on targets without
- * hardware support (e.g., 80386). Embox doesn't link libatomic, so we
- * provide fallbacks: plain RMW with barriers for non-lock-free targets.
- * Correct on single-core; multi-core targets without lock-free RMW are
- * not supported by this kernel.
- *
- * Macros are atomic_rmw_-prefixed: unprefixed atomic_load/store/exchange
- * collide with C11 <stdatomic.h> / C++ <atomic> names and break any C++ TU
- * that reaches the standard header (e.g. <mutex> via pthread.h).
+ * @brief Atomic RMW, with a fallback for targets that lack lock-free RMW.
  */
 
 #ifndef UTIL_ATOMIC_RMW_H_
@@ -45,9 +35,8 @@
 
 #else /* !ATOMIC_RMW_LOCK_FREE */
 
-/* The barrier is what is left of the memory order: the compiler is stopped
- * from moving the access, and a machine that cannot run two of these at once
- * has nothing else to reorder against. */
+/* No libatomic in Embox: plain RMW between compiler barriers, correct on a
+ * single core only. */
 #define atomic_rmw_add_fetch(ptr, val, order) \
 	({ __barrier(); *(ptr) += (val); __barrier(); *(ptr); })
 #define atomic_rmw_sub_fetch(ptr, val, order) \
@@ -66,9 +55,7 @@
 		__old;                                                                \
 	})
 
-/* Acquire on a load is "nothing after this may be hoisted above it", release
- * on a store is "nothing before it may sink below": one barrier each, on the
- * side the order names. */
+/* One barrier, on the side acquire (load) or release (store) needs. */
 #define atomic_rmw_load(ptr, order)                                               \
 	({                                                                        \
 		__typeof__(*(ptr)) __v = *(volatile __typeof__(*(ptr)) *)(ptr);        \

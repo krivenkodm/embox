@@ -1,38 +1,12 @@
 /**
  * @file
  * @brief mount() and umount() while other cores are walking the tree.
- *
- * The mount tree is rewritten by mount() and umount() and read by every path
- * resolution in the system. It has a lock now, and the counter next to that
- * lock said 0 on every run we had: the FAT hammer that produced the rest of
- * the evidence stops all of its workers before each unmount, by design, so
- * the two sides never met. A lock nobody has been seen to need is a lock
- * nobody has tested.
- *
- * This suite is that meeting. Worker threads walk paths under a mount point
- * without pause -- deliberately unpinned, so the scheduler is free to put
- * them on other cores -- while the suite's own thread mounts and unmounts the
- * volume underneath them.
- *
- * What it asserts:
- *
- *   - every mount and every umount completes (umount may answer EBUSY while a
- *     worker holds a descriptor, which is correct and is retried);
- *   - a file written before the run is readable after every mount, and its
- *     path is gone after every umount -- checked from the suite's own thread,
- *     which is the only one that knows which state the volume is in;
- *   - the workers keep running throughout and none of them sees a torn tree:
- *     a lookup answers either "found" or an error, never a bad pointer.
- *
- * What it reports rather than asserts: how many times the two sides actually
- * collided inside the mount tree's lock. That number is why the suite exists,
- * and asserting on it would make the suite fail on a machine too slow or too
- * small to produce a collision.
  */
 
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
@@ -47,44 +21,8 @@
 #include <util/err.h>
 #include <util/atomic_rmw.h>
 
-/* Not run at boot: this suite is deliberately hostile and on some
- * configurations it fails, and a failing suite aborts the runlevel -- leaving
- * it on autorun would cost every other suite and the shell. Run it by name:
- *
- *   test -t mount_smp
- *
- * What the runs say, all of them 24 rounds against three workers:
- *
- *   aarch64, four cores  the two sides meet: hundreds of collisions inside
- *                        the mount table's lock and thousands inside the name
- *                        tree's, and no descriptor lost. It is also the
- *                        configuration that finds the open defect below.
- *   x86, two cpus        the unmount side is starved: EBUSY on all ten
- *                        thousand tries while the three workers opened and
- *                        closed the file about thirty-five thousand times
- *                        each -- three and a half opens per try. Where there
- *                        are fewer cores than workers there is no instant
- *                        with every descriptor closed to be found, which is
- *                        why the unmount loop asks for one after UMOUNT_FAIR
- *                        tries rather than waiting forever.
- *   riscv, two harts     runs, once the riscv timer is fixed; before that the
- *                        second hart destroyed the time base and the first
- *                        pthread_create() never returned.
- *
- * And the reason worker_main checks what open() gave it, which cost a day to
- * find and is worth writing down: these threads run in the SHELL'S TASK, so
- * they share the shell's descriptor table. open() answers with the lowest
- * free number, and in a boot that has reached tish that means 0, 1 and 2 --
- * the shell's own stdio, which it takes back whenever it starts a command.
- * On four cores it does that while a worker is holding one, and the worker's
- * next read() goes to the serial port and waits for a key that never comes.
- * One worker parked there hangs the whole suite at pthread_join().
- *
- * It is not a filesystem defect, so it is counted and reported rather than
- * asserted on. The lesson generalises: in Embox an fd table belongs to a
- * task, and a threaded test running under the shell must not trust a
- * descriptor number to still be its own.
- */
+/* Not run at boot: the suite is hostile and fails on some configurations,
+ * and a failing suite aborts the runlevel. Run it by name: test -t mount_smp */
 EMBOX_TEST_SUITE_NOAUTO("mount/umount against a tree in use");
 
 TEST_SETUP_SUITE(setup_suite);
@@ -92,33 +30,27 @@ TEST_TEARDOWN_SUITE(teardown_suite);
 
 #define FS_NAME    "vfat"
 #define FS_DEV     "/dev/ramdisk_mnt"
-/* Bytes, not pages: a page count times PAGE_SIZE() means a different
- * volume on every board. */
+/* Bytes, not pages, so the volume is the same size on every board. */
 #define FS_BYTES    (2 * 1024 * 1024)
 #define FS_DIR     "/tmp_mnt"
 #define FS_FILE    FS_DIR "/probe.bin"
 
 
 #define WORKERS    3
-/* Enough rounds that the mount loop overlaps many worker passes, few enough
- * that the suite stays a test rather than a soak. */
+/* Enough rounds for the mount loop to overlap many worker passes. */
 #define ROUNDS     24
 #define PROBE_SZ   64
 
 /* Read by the workers, written by the suite thread. */
 static volatile int workers_run;
 
-/* Also read by the workers, also written by the suite thread: "stop opening
- * things for one turn". See the umount loop for why it has to exist. */
+/* Set by the suite thread: the workers stop opening files for one turn
+ * (see the umount loop). */
 static volatile int workers_pause;
 
-/* How many honest EBUSY answers the unmounting thread takes before it asks
- * for that turn, and how many tries it gives up after.
- *
- * The first number is the whole point of the suite and must stay large: for
- * UMOUNT_FAIR milliseconds the two sides race with nothing arranged, and that
- * is when the collisions this suite counts are made. The second is only a
- * bound on a test that would otherwise hang. */
+/* EBUSY answers the unmounter takes before it asks the workers for a turn,
+ * and tries before it gives up. UMOUNT_FAIR must stay large: the unarranged
+ * race before it is where the collisions are made. */
 #define UMOUNT_FAIR  200
 #define UMOUNT_TRIES 10000
 
@@ -148,8 +80,7 @@ static void *worker_main(void *arg) {
 		int fd;
 
 		if (workers_pause) {
-			/* Nothing is held at this point in the loop, so honouring the
-			 * request costs one sleep and gives the unmounting thread a
+			/* Nothing is held here, so pausing gives the unmounter a
 			 * window it cannot otherwise get. */
 			usleep(2000);
 			continue;
@@ -157,9 +88,8 @@ static void *worker_main(void *arg) {
 
 		worker[idx].walks++;
 
-		/* Both shapes of use: a bare resolution, and one that ends in a
-		 * descriptor. The second is what makes umount answer EBUSY, so it is
-		 * kept short on purpose. */
+		/* A bare resolution and one ending in a descriptor; the descriptor
+		 * makes umount answer EBUSY, so it is held only briefly. */
 		if (0 == stat(FS_DIR, &st)) {
 			worker[idx].found++;
 		}
@@ -170,34 +100,12 @@ static void *worker_main(void *arg) {
 
 			worker[idx].opened++;
 
-			/* What came back has to be the regular file that was asked
-			 * for, and that is checked rather than assumed.
-			 *
-			 * These workers run in the shell's task, so they share the
-			 * shell's descriptor table, and open() answers with the lowest
-			 * free number -- which in a boot that has reached tish means 0,
-			 * 1 and 2. Those are the shell's, and it takes them back for its
-			 * own stdio whenever it starts a command. On four cores that
-			 * happens while a worker is holding one:
-			 *
-			 *   SLOT 0 <- del 0x...6570 (a file)  th 1   <- the shell,
-			 *   SLOT 0 <- add 0x...7300 (console) th 1      closing a
-			 *   SLOT 1 <- lock 0x...7300          th 1      worker's fd
-			 *
-			 * and the worker's next read() on the number it still believes
-			 * is its file goes to the serial port and waits there for a key
-			 * that never comes. One worker parked in the console hangs the
-			 * whole suite at pthread_join(), which is a report of nothing.
-			 *
-			 * So the descriptor is checked, counted and let go. This is not
-			 * a filesystem defect and it is not asserted on: an fd table
-			 * belongs to a task, this suite is a guest in the shell's, and
-			 * the only thing it can do about that is not to trust a number
-			 * it did not keep locked. */
+			/* These threads share the shell's fd table, and the shell
+			 * takes fds 0-2 back for its stdio while a worker may hold one,
+			 * so check the descriptor is still the file. Counted, not
+			 * asserted: it is not a filesystem defect. */
 			if ((0 != fstat(fd, &fst)) || !S_ISREG(fst.st_mode)) {
-				/* Print at the point of the observation, not at the end:
-				 * what this descriptor is is the whole question, and by the
-				 * end it has been closed. */
+				/* Print now: by the end the descriptor is closed. */
 				if (worker[idx].wrong == 0) {
 					printk("mount_smp: worker %d: fd %d is no longer the file "
 					       "it opened -- fstat says mode %o size %ld\n",
@@ -211,8 +119,8 @@ static void *worker_main(void *arg) {
 			close(fd);
 		}
 
-		/* Also walk a path that never exists, so the miss side of the lookup
-		 * runs against the same rewrites. */
+		/* A path that never exists, so lookup misses run against the same
+		 * rewrites. */
 		(void)stat(FS_DIR "/nothing-here", &st);
 	}
 
@@ -275,8 +183,8 @@ static int setup_suite(void) {
 	if (0 != (res = format(FS_DEV, FS_NAME))) {
 		return res;
 	}
-	/* Mount once to lay down the file the workers will be looking for, then
-	 * leave it unmounted: the case drives mount and umount itself. */
+	/* Lay down the probe file, then leave the volume unmounted for the
+	 * case. */
 	if (0 != (res = mount(FS_DEV, FS_DIR, FS_NAME, 0, NULL))) {
 		return res;
 	}
@@ -299,9 +207,8 @@ static int teardown_suite(void) {
 
 	workers_run = 0;
 
-	/* Only if the case left it mounted. umount() of a directory that is not a
-	 * mount point is refused now (see kumount.c), but this suite is also the
-	 * thing that found that out, so it does not lean on it. */
+	/* Only if the case left it mounted; do not rely on umount() refusing
+	 * a directory that is not a mount point. */
 	if (0 == stat(FS_FILE, &st)) {
 		umount(FS_DIR);
 	}
@@ -312,13 +219,11 @@ static int teardown_suite(void) {
 TEST_CASE("umount of a directory that is not a mount point is refused") {
 	struct stat st;
 
-	/* An ordinary directory of the root filesystem. Unmounting it used to
-	 * unmount the root: umount_walker() deleted every inode, and the next
-	 * path resolution died on a NULL mount descriptor. */
+	/* An ordinary directory of the root filesystem, not a mount point. */
 	test_assert_not_zero(umount(FS_DIR));
 	test_assert_equal(errno, EINVAL);
 
-	/* ... and the root is still there, which is the half that matters. */
+	/* ... and the root is still mounted. */
 	test_assert_zero(stat("/", &st));
 	test_assert_zero(stat(FS_DIR, &st));
 }
@@ -334,9 +239,8 @@ TEST_CASE("a volume mounted and unmounted under a tree being walked") {
 	vt_before = counter_read(&vfs_tree_contended);
 	wd_before = counter_read(&vfs_walk_dying);
 
-	/* Does NOT apply here: this case is about two cores meeting inside the
-	 * mount tree, so the workers must be free to go wherever the scheduler
-	 * puts them. Nothing is pinned on purpose. */
+	/* Workers are not pinned: they must be free to meet the mount loop on
+	 * other cores. */
 	workers_run = 1;
 	for (i = 0; i < WORKERS; i++) {
 		test_assert_zero(
@@ -349,32 +253,19 @@ TEST_CASE("a volume mounted and unmounted under a tree being walked") {
 
 		test_assert_zero(mount(FS_DEV, FS_DIR, FS_NAME, 0, NULL));
 
-		/* Mounted: the file is there and reads back correctly. Only this
-		 * thread knows the volume is up, so only this thread may insist. */
+		/* Mounted: the file reads back. Only this thread knows the volume
+		 * is up, so only it asserts that. */
 		test_assert_zero(probe_check());
 
-		/* A worker holding a descriptor makes umount answer EBUSY. That is
-		 * the right answer -- wait for the descriptor to go rather than
-		 * quiescing the workers, because quiescing them is exactly what kept
-		 * the two sides from ever meeting. */
+		/* EBUSY while a worker holds a descriptor is correct: wait it out
+		 * rather than quiescing the workers, which keeps the sides apart. */
 		while (0 != (res = umount(FS_DIR))) {
 			if (++retries > UMOUNT_TRIES) {
 				break;
 			}
-			/* EBUSY while a worker holds a descriptor is the right answer,
-			 * and for the first UMOUNT_FAIR tries waiting it out is the
-			 * honest race this suite is for.
-			 *
-			 * It is not a race the unmounter can always win, though, and
-			 * that is measured rather than assumed: on x86 with two CPUs it
-			 * answered EBUSY on all ten thousand tries while the three
-			 * workers opened and closed the file about thirty-five thousand
-			 * times each -- three and a half opens per try. Where there are
-			 * fewer cores than workers there is no instant with every
-			 * descriptor closed for the unmounter to find, and no retry
-			 * budget fixes that. So after the honest part it asks for a turn
-			 * instead of waiting for one. The collisions are already made by
-			 * then; the counters below say how many. */
+			/* With fewer cores than workers there may never be an instant
+			 * with every descriptor closed, so after UMOUNT_FAIR tries ask
+			 * the workers for a turn. */
 			if (retries == UMOUNT_FAIR) {
 				workers_pause = 1;
 			}
@@ -386,6 +277,10 @@ TEST_CASE("a volume mounted and unmounted under a tree being walked") {
 
 		/* Unmounted: the path under the mount point is gone. */
 		test_assert_not_zero(open(FS_FILE, O_RDONLY) >= 0 ? 0 : 1);
+
+		/* A woken thread does not preempt a running one of its own
+		 * priority, and nothing here blocks when umount succeeds at once. */
+		sched_yield();
 	}
 
 	workers_run = 0;
@@ -399,16 +294,11 @@ TEST_CASE("a volume mounted and unmounted under a tree being walked") {
 		wrong += worker[i].wrong;
 	}
 
-	/* The workers must have been running throughout, or the run proves
-	 * nothing at all. */
+	/* The workers must have run throughout, or the run proves nothing. */
 	test_assert_not_zero(walks);
 
-	/* Whether any of them got a descriptor is reported, not asserted. With
-	 * the boot-core fence up (default_mask=1) every thread is on one core,
-	 * and the mount loop never yields between mount and umount -- so the
-	 * workers walk, find nothing mounted, and open nothing. That is the
-	 * fence doing its job, and it is also why a run with zero opens proves
-	 * nothing about the overlap this suite exists to produce. */
+	/* Reported, not asserted: with every thread on one core
+	 * (default_mask=1) the workers never find the volume mounted. */
 	if (opened == 0) {
 		printk("mount_smp: no worker opened anything -- nothing overlapped, "
 		       "so this run says nothing about concurrency\n");

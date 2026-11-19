@@ -9,6 +9,7 @@
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 
 #include <fs/inode.h>
 #include <fs/super_block.h>
@@ -34,11 +35,16 @@ static int fat_iterate_unlocked(struct inode *next, char *name, struct inode *pa
 	assert(parent->i_sb);
 
 	dirinfo = inode_priv(parent);
-	dirinfo->currententry = (uintptr_t) ctx->fs_ctx;
 
-	if (dirinfo->currententry == 0) {
+	/* The position (cluster, sector, entry) is the reader's, kept in ctx:
+	 * the directory's dirinfo is moved by every reader, lookup and create. */
+	if (ctx->fs_ctx == NULL) {
 		/* Need to get directory data from drive */
 		fat_reset_dir(dirinfo);
+	} else {
+		dirinfo->currentcluster = ctx->fs_pos[0];
+		dirinfo->currentsector = ctx->fs_pos[1];
+		dirinfo->currententry = ctx->fs_pos[2];
 	}
 
 	read_dir_buf(dirinfo);
@@ -77,7 +83,10 @@ static int fat_iterate_unlocked(struct inode *next, char *name, struct inode *pa
 		strncpy(name, tmp_name, NAME_MAX);
 		name[NAME_MAX - 1] = '\0';
 
-		ctx->fs_ctx = (void *) ((uintptr_t) dirinfo->currententry);
+		ctx->fs_pos[0] = dirinfo->currentcluster;
+		ctx->fs_pos[1] = dirinfo->currentsector;
+		ctx->fs_pos[2] = dirinfo->currententry;
+		ctx->fs_ctx = (void *) 1;
 		return 0;
 	}
 	case DFS_EOF:
@@ -88,13 +97,35 @@ static int fat_iterate_unlocked(struct inode *next, char *name, struct inode *pa
 }
 
 static int fat_truncate(struct inode *node, off_t length) {
+	struct fat_file_info *fi;
+	int res;
+
 	assert(node);
 
-	inode_size_set(node, length);
+	if (length < 0 || (uint64_t)length > 0xffffffffu) {
+		return -EFBIG; /* a FAT file's length is 32 bits */
+	}
+	if (S_ISDIR(node->i_mode)) {
+		return -EISDIR;
+	}
 
-	/* TODO realloc blocks*/
+	fat_lock();
+	fi = inode_priv(node);
+	if (!fi) {
+		fat_unlock();
+		return -ENOENT;
+	}
+	/* The driver's idea of the length can trail the inode's; the inode is
+	 * what the caller has been reading. */
+	fi->filelen = inode_size(node);
+	res = fat_truncate_file(fi, (uint32_t)length);
+	if (res == 0) {
+		inode_size_set(node, length);
+		node->i_mtime = fat_wrttime_now();
+	}
+	fat_unlock();
 
-	return 0;
+	return res;
 }
 
 /* @brief Create new file or directory
@@ -109,6 +140,7 @@ static int fat_create_unlocked(struct inode *i_new, struct inode *i_dir, int mod
 	struct fat_fs_info *fsi;
 	struct dirinfo *di;
 	char *name;
+	int res;
 
 	assert(i_dir && i_new);
 
@@ -148,9 +180,11 @@ static int fat_create_unlocked(struct inode *i_new, struct inode *i_dir, int mod
 	fi->fsi     = fsi;
 	fi->mode   |= i_new->i_mode;
 
-	if (0 != fat_create_file(fi, di, name, fi->mode)) {
-		return -EIO;
+	res = fat_create_file(fi, di, name, fi->mode);
+	if (res < 0) {
+		return res;
 	}
+	i_new->i_no = fat_ino_of(fi);
 
 	return 0;
 }
@@ -161,22 +195,26 @@ static int fat_delete_unlocked(struct inode *dir, struct inode *node) {
 	fi = inode_priv(node);
 
 	if (S_ISDIR(node->i_mode) && !fat_dir_empty(fi)) {
-		return -EPERM;
+		return -ENOTEMPTY;
+	}
+
+	if (!S_ISDIR(node->i_mode)) {
+		/* Only the name goes here; the clusters go in fat_destroy_inode() on
+		 * the last reference, and the private data stays for dvfs_file_valid().
+		 * A power loss in between leaves a nameless chain for fsck. */
+		if (fat_unlink_entry(fi, (uint8_t *) fat_sector_buff)) {
+			return -1;
+		}
+		fi->removed = 1;
+		return 0;
 	}
 
 	if (fat_unlike_file(fi, (uint8_t *) fat_sector_buff)) {
 		return -1;
 	}
 
-	/* Through destroy_inode, which picks directory or file by the
-	 * same test and -- the point -- clears the inode's private pointer. This
-	 * used to free the object and leave the inode still pointing at it,
-	 * harmless only while nothing else released private data. inode_free()
-	 * now does, so the VFS dropping this inode afterwards put the same block
-	 * on its pool's free list a second time. The list went circular and a
-	 * later pool_alloc() took a fault in slist_remove_first_link with a FAT
-	 * sector's bytes where a link pointer belonged -- three tests after the
-	 * delete that caused it, which is what a corrupted free list does. */
+	/* Through fat_destroy_inode(), which also clears the inode's private
+	 * pointer, so inode_free() does not release it a second time. */
 	fat_destroy_inode(node);
 
 	return 0;
@@ -214,10 +252,71 @@ static int fat_delete(struct inode *dir, struct inode *node) {
 	return res;
 }
 
+/* Same volume, any directory: the VFS checks the rest (types, targets,
+ * EXDEV) and replaces an existing target before asking. */
+static int fat_rename(struct inode *node, struct inode *new_parent,
+    const char *new_name) {
+	struct fat_file_info *fi;
+	struct dirinfo *newdi;
+	int res;
+
+	fat_lock();
+
+	fi = inode_priv(node);
+	newdi = inode_priv(new_parent);
+	if (!fi || !newdi) {
+		fat_unlock();
+		return -ENOENT;
+	}
+
+	if (fat_entries_per_name(new_name) > 1
+	    && strlen(new_name) >= NAME_MAX) {
+		fat_unlock();
+		return -ENAMETOOLONG;
+	}
+
+	res = fat_rename_file(fi, newdi, new_name);
+	if (res == DFS_OK) {
+		/* The inode number is derived from the entry's position. */
+		node->i_no = fat_ino_of(fi);
+	}
+
+	fat_unlock();
+
+	return res == DFS_OK ? 0 : -EIO;
+}
+
+/* A directory's private data is its dirinfo, whose first member is the
+ * fat_file_info of its own entry -- the same thing a file's is. */
+static int fat_utime(struct inode *node, time_t mtime) {
+	struct fat_file_info *fi;
+	int res;
+
+	fat_lock();
+	fi = inode_priv(node);
+	if (!fi) {
+		fat_unlock();
+		return -ENOENT;
+	}
+	res = fat_set_mtime(fi, mtime);
+	if (res == 0) {
+		/* What the entry now says: FAT keeps two-second steps. */
+		struct fat_dirent de;
+
+		fat_set_wrttime(&de, mtime);
+		node->i_mtime = fat_direntry_get_mtime(&de);
+	}
+	fat_unlock();
+
+	return res;
+}
+
 struct inode_operations fat_iops = {
 	.ino_create   = fat_create,
 	.ino_lookup   = fat_ilookup,
 	.ino_remove   = fat_delete,
 	.ino_iterate  = fat_iterate,
 	.ino_truncate = fat_truncate,
+	.ino_rename   = fat_rename,
+	.ino_utime    = fat_utime,
 };

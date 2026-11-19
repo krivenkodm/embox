@@ -3,8 +3,8 @@
 #include <soc/niiet_k1921vg1t_chip.h>
 
 #define HSECLK_VAL    27000000UL
-#define SYSTEM_FREQ  150000000UL
 
+#define SYSTEM_FREQ  150000000UL
 #define PLL0_DIV_NDIV      (100)
 #define PLL0_DIV_PREDIV    (1)
 #define PLL0_DIV_RDIV      (2)
@@ -12,6 +12,27 @@
 #define PLL0_DIV_DIV1B     (2)
 #define PLL0_FRAC          (1)
 #define PLL0_MOD           (1)
+#define FLASH_LATENCY      (2)
+
+// #define SYSTEM_FREQ  180000000UL
+// #define PLL0_DIV_NDIV      (40)
+// #define PLL0_DIV_PREDIV    (1)
+// #define PLL0_DIV_RDIV      (1)
+// #define PLL0_DIV_DIV1A     (2)
+// #define PLL0_DIV_DIV1B     (0)
+// #define PLL0_FRAC          (1)
+// #define PLL0_MOD           (1)
+// #define FLASH_LATENCY      (5)
+
+// #define SYSTEM_FREQ  202500000UL
+// #define PLL0_DIV_NDIV      (75)
+// #define PLL0_DIV_PREDIV    (1)
+// #define PLL0_DIV_RDIV      (1)
+// #define PLL0_DIV_DIV1A     (4)
+// #define PLL0_DIV_DIV1B     (0)
+// #define PLL0_FRAC          (1)
+// #define PLL0_MOD           (1)
+// #define FLASH_LATENCY      (5)
 
 //FOUT = 60 000 000 Hz  from 27 MHz HSE
 #define PLL1_DIV_NDIV      (100)
@@ -21,7 +42,27 @@
 #define PLL1_DIV_DIV1B     (2)
 #define PLL1_FRAC          (1)
 #define PLL1_MOD           (1)
+#define PLL1_CFG_CP        (9)
 
+/*
+    //FOUT = 180.000000 MHz  from Fref = 27 MHz HSE
+    // RCU->PLLDIV is equivalent for RCU->PLL[0].DIV
+    RCU->PLL[0].DIV = ( 2 << RCU_PLL_DIV_DIV1A_Pos ) |
+                      ( 0 << RCU_PLL_DIV_DIV1B_Pos ) |
+                      ( 1 << RCU_PLL_DIV_PREDIV_Pos) |
+                      ( 1 << RCU_PLL_DIV_NNCLR_Pos ) |      // N-divider enable
+                      ( 1 << RCU_PLL_DIV_RNCLR_Pos ) |      // R-divider enable
+                      ( 1 << RCU_PLL_DIV_RDIV_Pos  ) |
+                      ( 40 << RCU_PLL_DIV_NDIV_Pos );
+    RCU->PLL[0].MOD  = ( 1 << RCU_PLL_MOD_MOD_Pos   );
+    RCU->PLL[0].FRAC = ( 1 << RCU_PLL_FRAC_FRAC_Pos );
+    RCU->PLL[0].CFG  = ( 1 << RCU_PLL_CFG_FOUTEN_Pos ) |    // Fout enable
+               ( 3 << RCU_PLL_CFG_PFD_Pos    ) |
+               ( 0 << RCU_PLL_CFG_CLKSEL_Pos ) |
+               ( 1 << RCU_PLL_CFG_VCOMODE_Pos) |    // PREDIV Dis
+               ( 9 << RCU_PLL_CFG_CP_Pos) |
+               ( 0 << RCU_PLL_CFG_ST_Pos) ; // ST = 0 for integer divider
+*/
 /*
     //FOUT = 150 000 000 Hz  from 27 MHz HSE
     RCU->PLL[0].DIV = ( 1 << RCU_PLL_DIV_DIV1A_Pos ) |
@@ -54,15 +95,23 @@ struct clk_conf clks[] = {
 				VAL("PLL0_DIV_PREDIV", PLL0_DIV_PREDIV),
 				VAL("PLL0_DIV_RDIV", PLL0_DIV_RDIV),
 				VAL("PLL0_DIV_DIV1A", PLL0_DIV_DIV1A),
+				VAL("PLL0_DIV_DIV1B", PLL0_DIV_DIV1B),
 				VAL("PLL0_FRAC", PLL0_FRAC),
 				VAL("PLL0_MOD", PLL0_MOD),
+#ifdef PLL0_CFG_CP
+				VAL("PLL0_CFG_CP", PLL0_CFG_CP),
+#endif /* PLL0_CFG_CP */
 
 				VAL("PLL1_DIV_NDIV", PLL1_DIV_NDIV),
 				VAL("PLL1_DIV_PREDIV", PLL1_DIV_PREDIV),
 				VAL("PLL1_DIV_RDIV", PLL1_DIV_RDIV),
 				VAL("PLL1_DIV_DIV1A", PLL1_DIV_DIV1A),
+				VAL("PLL1_DIV_DIV1B", PLL1_DIV_DIV1B),
 				VAL("PLL1_FRAC", PLL1_FRAC),
 				VAL("PLL1_MOD", PLL1_MOD),
+#ifdef PLL1_CFG_CP
+				VAL("PLL1_CFG_CP", PLL1_CFG_CP),
+#endif /* PLL1_CFG_CP */
 			},
 		},
 		.type = {
@@ -76,6 +125,18 @@ struct clk_conf clks[] = {
 			.name = "SIU",
 			.regs = {
 				REGMAP("BASE", (SIU_BASE), 0x100),
+			},
+		},
+	},
+	[2] = {
+		.status = ENABLED,
+		.dev = {
+			.name = "FLASHM",
+			.regs = {
+				REGMAP("BASE", (FLASHM_BASE), 0x100),
+			},
+			.misc = {
+				VAL("FLASH_LATENCY", FLASH_LATENCY),
 			},
 		},
 	},
@@ -362,6 +423,60 @@ struct led_conf leds[] = {
 	},
 };
 
+struct dma_conf dmas[] = {
+		[0] = {
+		//.name = "DMA0",
+		.status = ENABLED,
+		.dev = {
+			
+			.name = "DMA0",
+			.regs = {
+				REGMAP("BASE_ADDR", (DMA_BASE), 0x100),
+			},
+			.clocks = {
+				VAL("",  "CLK_DMA0"),
+			},
+			.irqs = {
+				VAL("CHAN0",  PLIC_IRQ_DMA_CH0),
+				VAL("CHAN1",  PLIC_IRQ_DMA_CH1),
+				VAL("CHAN2",  PLIC_IRQ_DMA_CH2),
+				VAL("CHAN3",  PLIC_IRQ_DMA_CH3),
+				VAL("CHAN4",  PLIC_IRQ_DMA_CH4),
+				VAL("CHAN5",  PLIC_IRQ_DMA_CH5),
+				VAL("CHAN6",  PLIC_IRQ_DMA_CH6),
+				VAL("CHAN7",  PLIC_IRQ_DMA_CH7),
+				VAL("CHAN8",  PLIC_IRQ_DMA_CH8),
+				VAL("CHAN9",  PLIC_IRQ_DMA_CH9),
+				VAL("CHAN10", PLIC_IRQ_DMA_CH10),
+				VAL("CHAN11", PLIC_IRQ_DMA_CH11),
+				VAL("CHAN12", PLIC_IRQ_DMA_CH12),
+				VAL("CHAN13", PLIC_IRQ_DMA_CH13),
+				VAL("CHAN14", PLIC_IRQ_DMA_CH14),
+				VAL("CHAN15", PLIC_IRQ_DMA_CH15),
+				VAL("CHAN16", PLIC_IRQ_DMA_CH16),
+				VAL("CHAN17", PLIC_IRQ_DMA_CH17),
+				VAL("CHAN18", PLIC_IRQ_DMA_CH18),
+				VAL("CHAN19", PLIC_IRQ_DMA_CH19),
+				VAL("CHAN20", PLIC_IRQ_DMA_CH20),
+				VAL("CHAN21", PLIC_IRQ_DMA_CH21),
+				VAL("CHAN22", PLIC_IRQ_DMA_CH22),
+				VAL("CHAN23", PLIC_IRQ_DMA_CH23),
+				VAL("CHAN24", PLIC_IRQ_DMA_CH24),
+				VAL("CHAN25", PLIC_IRQ_DMA_CH25),
+				VAL("CHAN26", PLIC_IRQ_DMA_CH26),
+				VAL("CHAN27", PLIC_IRQ_DMA_CH27),
+				VAL("CHAN28", PLIC_IRQ_DMA_CH28),
+				VAL("CHAN29", PLIC_IRQ_DMA_CH29),
+				VAL("CHAN30", PLIC_IRQ_DMA_CH30),
+				VAL("CHAN31", PLIC_IRQ_DMA_CH31),
+			},
+			.misc = {
+				VAL("CHAN_NUM", 32),
+			},
+		},
+	},
+};
+
 struct pwm_conf pwms[] = {
 	[0] = {
 		.name = "PWM0",
@@ -425,6 +540,10 @@ struct pwm_conf pwms[] = {
 			.clocks = {
 				VAL("",  "CLK_TMR2"),
 			},
+			.dmas = {
+				VAL("OUT3_NUM", 0),
+				VAL("OUT3_CHAN", 2),
+			},
 			.misc = {
 				VAL("COMP_MASK",  0xFFFFFFFF),
 				VAL("TMR_NAME", "TMR2"),
@@ -445,6 +564,16 @@ struct pwm_conf pwms[] = {
 				PIN("OUT2", GPIO_PORT_A, 14, GPIO_MODE_ALT, 5),
 				PIN("OUT3", GPIO_PORT_A, 15, GPIO_MODE_ALT, 5),
 			},
+			.dmas = {
+				VAL("OUT0_NUM", 0),
+				VAL("OUT0_CHAN", 20),
+				VAL("OUT1_NUM", 0),
+				VAL("OUT1_CHAN", 21),
+				VAL("OUT2_NUM", 0),
+				VAL("OUT2_CHAN", 22),
+				VAL("OUT3_NUM", 0),
+				VAL("OUT3_CHAN", 23),
+			},
 			.clocks = {
 				VAL("",  "CLK_TMR3"),
 			},
@@ -452,6 +581,102 @@ struct pwm_conf pwms[] = {
 				VAL("COMP_MASK",  0xFFFFFFFF),
 				VAL("TMR_NAME", "TMR3"),
 				VAL("TMR_IDX", 3),
+			},
+		},
+	},
+		[10] = {
+		.name = "PWM10",
+		.dev = {
+			.name = "PWM10",
+			.regs = {
+				REGMAP("BASE_ADDR", (TMR10_BASE), 0x100),
+			},
+			.pins = {
+				PIN("OUT0", GPIO_PORT_D, 5, GPIO_MODE_ALT, 3),
+			},
+			.clocks = {
+				VAL("",  "CLK_TMR10"),
+			},
+			.dmas = {
+				VAL("OUT0_NUM", 0),
+				VAL("OUT0_CHAN", 10),
+			},
+			.misc = {
+				VAL("COMP_MASK",  0xFFFFFFFF),
+				VAL("TMR_NAME", "TMR10"),
+				VAL("TMR_IDX", 10),
+			},
+		},
+	},
+	[12] = {
+		.name = "PWM12",
+		.dev = {
+			.name = "PWM12",
+			.regs = {
+				REGMAP("BASE_ADDR", (TMR12_BASE), 0x100),
+			},
+			.pins = {
+				PIN("OUT0", GPIO_PORT_D, 6, GPIO_MODE_ALT, 5),
+			},
+			.clocks = {
+				VAL("",  "CLK_TMR12"),
+			},
+			.dmas = {
+				VAL("OUT0_NUM", 0),
+				VAL("OUT0_CHAN", 12),
+			},
+			.misc = {
+				VAL("COMP_MASK",  0xFFFFFFFF),
+				VAL("TMR_NAME", "TMR12"),
+				VAL("TMR_IDX", 12),
+			},
+		},
+	},
+	[13] = {
+		.name = "PWM13",
+		.dev = {
+			.name = "PWM13",
+			.regs = {
+				REGMAP("BASE_ADDR", (TMR13_BASE), 0x100),
+			},
+			.pins = {
+				PIN("OUT0", GPIO_PORT_D, 8, GPIO_MODE_ALT, 5),
+			},
+			.clocks = {
+				VAL("",  "CLK_TMR13"),
+			},
+			.dmas = {
+				VAL("OUT0_NUM", 0),
+				VAL("OUT0_CHAN", 13),
+			},
+			.misc = {
+				VAL("COMP_MASK",  0xFFFFFFFF),
+				VAL("TMR_NAME", "TMR13"),
+				VAL("TMR_IDX", 13),
+			},
+		},
+	},
+	[14] = {
+		.name = "PWM14",
+		.dev = {
+			.name = "PWM14",
+			.regs = {
+				REGMAP("BASE_ADDR", (TMR14_BASE), 0x100),
+			},
+			.pins = {
+				PIN("OUT0", GPIO_PORT_D, 7, GPIO_MODE_ALT, 5),
+			},
+			.clocks = {
+				VAL("",  "CLK_TMR14"),
+			},
+			.dmas = {
+				VAL("OUT0_NUM", 0),
+				VAL("OUT0_CHAN", 14),
+			},
+			.misc = {
+				VAL("COMP_MASK",  0xFFFFFFFF),
+				VAL("TMR_NAME", "TMR14"),
+				VAL("TMR_IDX", 14),
 			},
 		},
 	},
@@ -920,5 +1145,5 @@ struct usb_conf usbs[] = {
 	},
 };
 
-EXPORT_CONFIG(CLK(clks), GPIO(gpios), UART(uarts), LED(leds),
+EXPORT_CONFIG(CLK(clks), GPIO(gpios), UART(uarts), LED(leds), DMA(dmas),
 					PWM(pwms), SPI(spis), I2C(i2cs), ETH(eths), CAN(cans), USB(usbs))

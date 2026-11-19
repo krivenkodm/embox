@@ -55,9 +55,8 @@ static int vfs_mount_walker(struct inode *dir) {
 	} while (1);
 }
 
-/* Mirror of umount_walker() in kumount.c, for a mount that got as far as
- * walking the volume and then could not be registered. Same shape: children
- * first, then the node, filesystem gets its data back on the way. */
+/* Undoes a mount that walked the volume but could not be registered;
+ * mirrors umount_walker() in kumount.c. */
 static void mount_unwalk(struct inode *node) {
 	struct inode *child;
 

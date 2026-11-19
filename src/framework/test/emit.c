@@ -10,16 +10,18 @@
 #include <hal/ipl.h>
 #include <kernel/spinlock.h>
 
-/* Masking interrupts is not a lock with more than one core, and this buffer
- * is written by every thread a suite starts. Two cores in here at once both
- * read b->ptr, both store through it and both advance it, so one character is
- * lost and the overflow branch increments b->ptr with nothing to stop it.
- * One lock for every buffer: emitting is a few instructions and suites do it
- * rarely, so there is nothing to gain from a lock per buffer. */
+#if defined(SMP)
+/* One lock for every buffer: masking interrupts does not exclude other
+ * cores, and every thread a suite starts writes here. */
 static spinlock_t emit_lock = SPIN_STATIC_UNLOCKED;
+#endif
 
 void test_emit_into(struct test_emit_buffer *b, char ch) {
+#if defined(SMP)
 	ipl_t ipl = spin_lock_ipl(&emit_lock);
+#else
+	ipl_t ipl = ipl_save();
+#endif
 	{
 		if (test_emit_buffer_overflown(b)) {
 			goto out;
@@ -35,5 +37,9 @@ void test_emit_into(struct test_emit_buffer *b, char ch) {
 		}
 	}
 out:
+#if defined(SMP)
 	spin_unlock_ipl(&emit_lock, ipl);
+#else
+	ipl_restore(ipl);
+#endif
 }

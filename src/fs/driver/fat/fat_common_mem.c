@@ -4,6 +4,8 @@
  * @date Oct 27, 2019
  * @author Anton Bondarev
  */
+#include <string.h>
+
 #include <mem/misc/pool.h>
 
 #include <fs/fat.h>
@@ -18,9 +20,10 @@ POOL_DEF(fat_fs_pool, struct fat_fs_info, FAT_DESC_QUANTITY);
 POOL_DEF(fat_file_pool, struct fat_file_info, FAT_INODE_QAUNTITY);
 POOL_DEF(fat_dirinfo_pool, struct dirinfo, FAT_INODE_QAUNTITY);
 
-/* How many of each are out on loan, and how many times a request was
- * refused. A pool that runs out surfaces as -ENOMEM from fat_create and
- * then as a plain failed open(), which says nothing about the cause. */
+/* The pools hand out zeroed objects: POOL_DEF storage in .bss..reserve is
+ * not cleared at boot, and callers rely on it. */
+
+/* Pool use and refusals: an exhausted pool shows only as a failed open(). */
 struct fat_pool_use fat_pool_use = {
 	.fs_max = FAT_DESC_QUANTITY,
 	.file_max = FAT_INODE_QAUNTITY,
@@ -34,6 +37,7 @@ struct fat_fs_info *fat_fs_alloc(void) {
 	struct fat_fs_info *p = pool_alloc(&fat_fs_pool);
 
 	if (p) {
+		memset(p, 0, sizeof(*p));
 		fat_pool_use.fs_live++;
 	}
 	else {
@@ -53,6 +57,7 @@ struct fat_file_info *fat_file_alloc(void) {
 	struct fat_file_info *p = pool_alloc(&fat_file_pool);
 
 	if (p) {
+		memset(p, 0, sizeof(*p));
 		fat_pool_use.file_live++;
 		if (fat_pool_use.file_live > fat_pool_use.file_peak) {
 			fat_pool_use.file_peak = fat_pool_use.file_live;
@@ -75,6 +80,7 @@ struct dirinfo *fat_dirinfo_alloc(void) {
 	struct dirinfo *p = pool_alloc(&fat_dirinfo_pool);
 
 	if (p) {
+		memset(p, 0, sizeof(*p));
 		fat_pool_use.dirinfo_live++;
 		if (fat_pool_use.dirinfo_live > fat_pool_use.dirinfo_peak) {
 			fat_pool_use.dirinfo_peak = fat_pool_use.dirinfo_live;

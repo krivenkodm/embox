@@ -1,31 +1,6 @@
 /**
  * @file
- * @brief An 8 MiB file through the stock allocator, written and read back.
- *
- * Recorded defect: a stock-allocator write of 8 MiB into a fresh file
- * returned success for all 128 chunks and left 5.4 MiB on the medium, wrong
- * from cluster 857 on -- and it did not reproduce every time, which is worse
- * than a deterministic defect rather than better. It was worked around at
- * the time and never explained.
- *
- * The allocator has been changed several times since -- a lazy cursor, an
- * honest free count, unlink of a multi-cluster file -- and **no
- * re-measurement was ever recorded**. So it is not known whether the defect
- * is alive. This suite is that measurement:
- *
- *   - a regenerable pattern, so a mismatch names the offset rather than
- *     saying "the file differs";
- *   - every chunk's return value checked, because the original returned
- *     success for all of them;
- *   - the size checked separately from the content, because the original was
- *     short AND wrong, and those are two different failures;
- *   - read back through a fresh descriptor after a remount, because a
- *     correct file and a correct cache are not the same thing.
- *
- * Not run at boot: it writes 8 MiB through an emulated block device, which
- * costs seconds. Run it by name:
- *
- *   test -t fat_big
+ * @brief Writes an 8 MiB FAT file and reads it back before and after a remount.
  */
 
 #include <errno.h>
@@ -53,11 +28,8 @@ TEST_TEARDOWN_SUITE(teardown_suite);
 #define FS_NAME    "vfat"
 #define FS_DEV_NAME "ramdisk_big"
 #define FS_DEV     "/dev/" FS_DEV_NAME
-/* 40 MiB of volume for an 8 MiB file: room for the file, its chain, and the
- * slack a FAT volume needs, without pretending to be a card. */
-/* Bytes, not pages. It was FS_PAGES * PAGE_SIZE(), which is 40 MiB only
- * where a page is 4 KiB: on a board configured with 64 KiB pages the same
- * expression asks for 640 MiB, more than the machine has. */
+/* 40 MiB volume for an 8 MiB file and its FAT. In bytes, not pages: the
+ * page size varies by board. */
 #define FS_BYTES   (40 * 1024 * 1024)
 #define FS_DIR     "/tmp_big"
 #define BIG_FILE   FS_DIR "/big.bin"
@@ -67,8 +39,7 @@ TEST_TEARDOWN_SUITE(teardown_suite);
 
 static char chunk[CHUNK];
 
-/* Byte i of the file is a function of i alone, so a mismatch names the offset
- * it happened at rather than "the file differs". */
+/* Byte i depends on i alone, so a mismatch names its offset. */
 static void chunk_fill(char *buf, size_t len, size_t off) {
 	size_t i;
 
@@ -79,12 +50,9 @@ static void chunk_fill(char *buf, size_t len, size_t off) {
 	}
 }
 
-/* Reads the volume's root directory straight off the block device, so that
- * "the entry is on the disk" and "the mount finds it" are two answers and not
- * one. The geometry is computed exactly as fat_get_volinfo() computes it --
- * including its FAT32-EBPB fallback when bpb.secperfat is zero -- so that the
- * dump looks at the sectors the driver looks at and not at the ones a
- * textbook says it should. */
+/* Dumps the root directory straight off the block device, with geometry
+ * computed as fat_get_volinfo() does, to tell an on-disk fault from a
+ * mount-walk fault. */
 static void dump_root(const char *when) {
 	static char sec[512];
 	struct block_dev *bdev = block_dev_find(FS_DEV_NAME);
@@ -135,8 +103,7 @@ static void dump_root(const char *when) {
 	    (numsecs - dataarea) / secperclus);
 
 	/* The root directory is walked as pseudo-cluster rootdir/secperclus, so
-	 * that entry in the FAT decides where the walk goes after the first
-	 * secperclus sectors. Print it, and the entry after it. */
+	 * its FAT entry decides where the walk goes next. */
 	{
 		unsigned pseudo = rootdir / secperclus;
 		unsigned off = pseudo * 2;
@@ -210,8 +177,7 @@ static int teardown_suite(void) {
 }
 
 
-/* Reads the whole file back through a fresh descriptor and compares it with
- * the pattern, naming the first byte that differs. */
+/* Compares the file with the pattern via a fresh descriptor. */
 static void verify_content(const char *when) {
 	size_t off;
 	int fd;
@@ -266,9 +232,7 @@ static void verify_content(const char *when) {
 	test_assert_zero(close(fd));
 }
 
-/* Does anything at all survive a remount on a volume this driver formatted?
- * One small file, nothing else, so that the answer is about the mount and not
- * about the 8 MiB above. */
+/* One small file across a remount, apart from the 8 MiB case. */
 TEST_CASE("a small file survives a remount") {
 	int fd;
 	char buf[8];
@@ -292,8 +256,7 @@ TEST_CASE("a small file survives a remount") {
 	test_assert_zero(close(fd));
 }
 
-/* Answers whether the file is there at all after a remount, without asserting
- * -- see the note at the call site. */
+/* Does not assert, so the caller can dump diagnostics first. */
 static int file_survives_remount(void) {
 	int fd = open(BIG_FILE, O_RDONLY);
 
@@ -326,8 +289,8 @@ TEST_CASE("8 MiB written through the allocator comes back byte for byte") {
 
 	test_assert_zero(close(fd));
 
-	/* The size, separately from the content: the original was short AND
-	 * wrong, and those are two different failures. */
+	/* Size separately from content: a short file and a wrong file are
+	 * different failures. */
 	test_assert_zero(stat(BIG_FILE, &st));
 	if (st.st_size != BIG_SIZE) {
 		printk("fat_big: the file is %u bytes, %u were written\n",
@@ -335,12 +298,10 @@ TEST_CASE("8 MiB written through the allocator comes back byte for byte") {
 	}
 	test_assert_equal((size_t)st.st_size, (size_t)BIG_SIZE);
 
-	/* Read it back on the same mount first: that is the allocator's own
-	 * question, and it must not be answered together with anything else. */
+	/* Same mount first, to check the allocator apart from the remount. */
 	verify_content("on the same mount");
 
-	/* The file has to be listed before the remount as well: if it is not,
-	 * the remount is not the question. */
+	/* Listed before the remount too, so a miss after it is the remount's. */
 	{
 		DIR *d = opendir(FS_DIR);
 		struct dirent *e;
@@ -356,29 +317,12 @@ TEST_CASE("8 MiB written through the allocator comes back byte for byte") {
 		test_assert_true(seen);
 	}
 
-	/* Then through a remount, because a correct file and a correct cache are
-	 * not the same thing. */
+	/* Then after a remount: a correct cache does not prove a correct disk. */
 	test_assert_zero(umount(FS_DIR));
 	test_assert_zero(mount(FS_DEV, FS_DIR, FS_NAME, 0, NULL));
 
-	/* The same file after a remount is a SEPARATE question from the one above,
-	 * and for a long time it had a different answer -- the mount walk of the
-	 * remounted volume came back with one entry, "root", and neither file. The
-	 * disk was never the problem: dump_root() below reads the directory off
-	 * the block device, and it held both entries the whole time.
-	 *
-	 * What the walk was doing is in fat_root_dir_record() and in
-	 * fat_fetch_dir(): format wrote a directory entry for the root INTO the
-	 * root, pointing at a cluster number that was really a sector address
-	 * divided by the cluster size, and the walk descended into it and read
-	 * the file's own data as directory entries. It only showed once
-	 * something had been written over those sectors, which is why 8 MiB
-	 * broke it and a 4-byte file did not.
-	 *
-	 * So it is asserted here. The dump runs only when the assertion is about
-	 * to fail, because the answer to "is it the disk or the walk?" is the
-	 * whole diagnosis and it should not have to be added by hand next
-	 * time. */
+	/* On failure, print what the mount walk sees and what is on the disk, to
+	 * tell a walk fault from a disk fault. */
 	if (!file_survives_remount()) {
 		DIR *d = opendir(FS_DIR);
 		struct dirent *e;
@@ -393,10 +337,7 @@ TEST_CASE("8 MiB written through the allocator comes back byte for byte") {
 		}
 		printk("fat_big: and what is actually on the volume:\n");
 		dump_root("after the remount");
-		/* The other way for entries that are on the disk to be missing from
-		 * the tree: the walk found them and had nothing to put them in. This
-		 * is how the root-directory defect actually presented -- one stray
-		 * entry took the last object in a pool of sixteen. */
+		/* On-disk entries also go missing when the FAT pools run out. */
 		printk("fat_big: FAT pools: file %u/%u peak %u refused %u, "
 		       "dirinfo %u/%u peak %u refused %u\n",
 		    fat_pool_use.file_live, fat_pool_use.file_max,
@@ -406,7 +347,6 @@ TEST_CASE("8 MiB written through the allocator comes back byte for byte") {
 	}
 	test_assert_true(file_survives_remount());
 
-	/* And it is the same file: a name in a directory is not the content. */
 	verify_content("after the remount");
 
 	printk("fat_big: %u MiB written, read back byte for byte on the mount "

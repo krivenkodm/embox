@@ -42,14 +42,10 @@ int dir_follow_down(DIR *dir) {
 		return 0;
 	}
 
-	/* The DIR now points into the mounted volume, so its
-	 * reference has to be on that volume's root -- otherwise umount() frees
-	 * it under the walk, and closedir() releases a reference it never took.
-	 * Measured as inode_unref() on an inode with i_ref 0, a live superblock
-	 * and an empty name, which is what a volume root looks like. */
+	/* The DIR now points into the mounted volume, so its reference moves
+	 * to that volume's root; otherwise umount() frees it under the walk. */
 	if (!inode_ref(dir->path.node)) {
-		/* The volume went while we were stepping into it. Stay on what we
-		 * already hold. */
+		/* The volume went away meanwhile; stay on what is already held. */
 		dir->path.node = held;
 		return -ENOENT;
 	}
@@ -91,11 +87,8 @@ DIR *opendir(const char *path) {
 
 	d->path = node_path;
 
-	/* A DIR is a directory inode held from opendir() to
-	 * closedir(), across everything the caller does in between. open() in
-	 * this layer resolves its last path component through one of these, so
-	 * "in between" includes a blocking call into the filesystem. Without a
-	 * reference, umount() frees the directory under it. */
+	/* A DIR holds a reference on its directory from opendir() to closedir(),
+	 * so umount() cannot free it in between. */
 	if (!inode_ref(d->path.node)) {
 		objfree(&dir_pool, d);
 		SET_ERRNO(ENOENT);
@@ -122,8 +115,7 @@ int closedir(DIR *dir) {
 		inode_del(node);
 	}
 
-	/* And let go of whatever readdir() stopped on, and of
-	 * the directory itself. */
+	/* Release the entry readdir() stopped on, and the directory. */
 	inode_unref((struct inode *)(uintptr_t)dir->current.d_ino);
 	dir->current.d_ino = 0;
 
@@ -155,13 +147,9 @@ struct dirent *readdir(DIR *dir) {
 
 	res = vfs_get_child_next(&dir->path, prev, &child);
 
-	/* The cursor is a pointer this walk held from one call to the next, across
-	 * everything the caller did in between -- open() resolves its last path
-	 * component by walking the parent this way, and unlink() on another core
-	 * frees the inode it is standing on. Measured as a jump to
-	 * 0x64452607e8c9aa8b, which is text, not code. So the cursor holds a
-	 * reference for as long as it is the cursor, and lets go here, once the
-	 * step past it has been taken. */
+	/* The cursor holds a reference while it is the cursor, or unlink() on
+	 * another core could free it between calls. Released once the walk has
+	 * stepped past it. */
 	inode_unref(prev);
 	dir->current.d_ino = 0;
 
@@ -172,9 +160,8 @@ struct dirent *readdir(DIR *dir) {
 	node = child.node;
 
 	if (!inode_ref(node)) {
-		/* It left the tree while we were stepping onto it. The walk ends;
-		 * POSIX leaves readdir() against a directory somebody is changing
-		 * unspecified, and stopping is the answer that touches nothing. */
+		/* It left the tree meanwhile. POSIX leaves readdir() on a changing
+		 * directory unspecified; ending the walk touches nothing. */
 		return NULL;
 	}
 

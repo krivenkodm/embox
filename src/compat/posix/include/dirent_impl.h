@@ -16,13 +16,9 @@ struct DIR_struct {
 	struct slist inodes_list;
 };
 
-/* A DIR holds a reference on the inode in its path, from
- * opendir() to closedir(). if_mounted_follow_down() REPLACES that inode with
- * the root of whatever is mounted there, so anything that follows a DIR down
- * has to carry the reference with it. Use this instead of calling
- * if_mounted_follow_down() on a DIR's path: doing it by hand leaves the
- * reference on the directory the DIR no longer points at, and closedir() then
- * releases one it never took. */
+/* Follows a DIR onto the volume mounted at its path, moving the DIR's
+ * reference with it. Use instead of if_mounted_follow_down() on a DIR's
+ * path, which would leave the reference behind. */
 extern int dir_follow_down(DIR *dir);
 
 #endif /* DIRENT_IMPL_H_ */

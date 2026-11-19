@@ -117,8 +117,10 @@ static int termios_handle_erase(const struct termios2 *t, char ch,
 				erase_len = 1;
 			}
 
-			i_ring->head -= erase_len - buflen;
-			ring_fixup_head(i_ring, buflen);
+			i_ring->head += buflen - erase_len;
+			if (i_ring->head >= buflen) {
+				i_ring->head -= buflen;
+			}
 
 			while (erase_len--) {
 				result += termios_echo_erase(t, o_ring, o_buff, buflen);
@@ -172,13 +174,11 @@ int termios_input(const struct termios2 *t, char ch, struct termios_i_buff *b,
 	 * end, even when some chars are missing. */
 
 	if (ring_room_size(b->ring, b->buflen) > !(raw_mode || is_eol)) {
-		if (ring_write_all_from(b->ring, b->buff, b->buflen, &ch, 1)) {
-			termios_gotc(t, ch, o_ring, o_buff, buflen);
+		if (ring_write_all_from(b->ring, b->buff, b->buflen, &ch, 1)
+		    && termios_gotc(t, ch, o_ring, o_buff, buflen)) {
 			got_echo = TERMIOS_RES_GOT_ECHO;
 		}
 	}
-
-	got_echo &= TIO_L(t, ECHO);
 
 	return termios_input_status(t, b, ch, is_eol) | got_echo
 	       | (is_eol ? TERMIOS_RES_GOT_NEWLINE : 0);

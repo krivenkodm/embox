@@ -30,10 +30,8 @@
 	__EMBOX_TEST_SUITE_NM("" description, __test_suite, \
 	    MACRO_GUARD(__test_private), true)
 
-/* A suite that is registered but not run at boot -- `test -t <name>' runs it.
- * For a suite whose whole job is to be hostile, or one that costs seconds: a
- * failing suite aborts the runlevel, so leaving such a suite on autorun would
- * cost every other suite in the image and the shell with them. */
+/* Registered but not run at boot; `test -t <name>' runs it. For hostile or
+ * slow suites: a failing suite aborts the runlevel. */
 #define EMBOX_TEST_SUITE_NOAUTO(description)            \
 	__EMBOX_TEST_SUITE_NM("" description, __test_suite, \
 	    MACRO_GUARD(__test_private), false)
